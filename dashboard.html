@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>개인 AI 비서</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f2f5f0;color:#192b25;font:16px system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:clamp(16px,5vw,54px)}h1{margin:0;font-size:clamp(30px,6vw,48px)}h2{font-size:20px;margin:0 0 16px}.layout{display:grid;grid-template-columns:1fr 1.1fr;gap:16px}section{background:white;border:1px solid #d9e4dc;border-radius:18px;padding:clamp(12px,3vw,24px);min-width:0}.brief{margin:12px 0 24px;color:#415b50}button,textarea{font:inherit;border:1px solid #a9bfb1;border-radius:8px;padding:8px;color:inherit;background:#fff}button{cursor:pointer}button:hover{background:#e3f0e9}textarea{display:block;width:100%;min-height:95px;margin:8px 0;resize:vertical}.primary{background:#1d573e;color:white}.primary:hover{background:#14432f}.month{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;text-align:center}.grid button{padding:5px 0;min-height:46px}.grid button[aria-pressed=true]{background:#d1e8d9;border-color:#327553}.grid small{display:block;font-size:11px}ul{padding:0;list-style:none}li{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #e4ebe6}li label{flex:1;overflow-wrap:anywhere}li small{color:#486358}p{overflow-wrap:anywhere}summary{cursor:pointer;margin:16px 0 8px}button:focus-visible,textarea:focus-visible{outline:3px solid #327553;outline-offset:2px}@media(max-width:740px){.layout{grid-template-columns:1fr}}
+.transcript{display:grid;gap:14px;max-height:28rem;overflow:auto;overscroll-behavior:contain;margin-bottom:16px}
+.turn{display:grid;gap:8px}
+.bubble{margin:0;padding:10px 12px;border-radius:12px;white-space:pre-wrap}
+.user{background:#e2efe7;justify-self:end;max-width:90%}
+.assistant{background:#f3f6f3}
+.speaker{display:block;margin-bottom:4px;font-size:12px;font-weight:700;color:#415b50}
+.saved{margin:2px 0}
+.saved li{display:block;border:0;padding:2px 0}
+.saved button{width:100%;text-align:left;overflow-wrap:anywhere}
+.examples{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}.examples button{font-size:13px}
+.page-header{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.engine,.progress{font-size:13px;color:#415b50}
+.grid button[aria-current=date]{font-weight:700;text-decoration:underline}
+.calendar-actions{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:14px}
+.calendar-actions h3{margin:0}
+textarea[readonly],button:disabled{opacity:.7}
+</style>
+<main>
+<header class="page-header"><h1>개인 AI 비서</h1><!-- logout --></header>
+<p class="brief" id="weather">날씨를 불러오는 중입니다.</p>
+<div class="layout">
+<section><h2>AI와 일정 정리</h2>
+<p class="engine">AI 비서가 답변합니다. API를 사용할 수 없을 때 서버 설정에 따라 Codex CLI로 답변할 수 있습니다.</p>
+<div id="transcript" class="transcript" role="log" aria-label="현재 탭의 대화"></div>
+<div class="examples" aria-label="입력 예시">
+<button type="button" data-example="할 일이 너무 많아서 어디서부터 시작할지 막막해.">고민 예시</button>
+<button type="button" data-example="내일 아침 일정은 산책이고 점심에 친구랑 밥 약속이 있어.">복수 일정 예시</button>
+</div>
+<form id="chat"><label for="message">고민이나 정리할 일정을 알려주세요.</label><textarea id="message" required maxlength="2000" placeholder="아침 일정은 산책이고 점심에 친구랑 밥 약속"></textarea><button class="primary" id="send">보내기</button></form>
+<p id="reply" role="status"></p></section>
+<section><h2>일정</h2>
+<div class="month"><button id="previous" aria-label="이전 달">‹</button><strong id="month"></strong><button id="next" aria-label="다음 달">›</button></div>
+<div id="calendar" class="grid"></div>
+<div class="calendar-actions"><h3 id="selected" tabindex="-1"></h3><button id="goto-today" disabled>오늘</button></div>
+<p id="progress" class="progress"></p><ul id="tasks"></ul>
+<details id="carry"><summary>지난 미완료 일정 이월</summary><ul id="overdue"></ul><button id="move">선택한 날짜로 옮기기</button></details>
+<p id="status" role="status"></p></section>
+</div></main>
+<script>
+const el = id => document.getElementById(id);
+const format = (year, month, day) => [year, ...[month, day].map(n => String(n).padStart(2, "0"))].join("-");
+let today, selected, page, items = [];
+const history = [];
+async function api(path, method = "GET", data) {
+  const options = {method};
+  if (data !== undefined) {
+    options.headers = {"Content-Type": "application/json"};
+    options.body = JSON.stringify(data);
+  }
+  const response = await fetch("/api/" + path, options);
+  if (!response.ok) {
+    const messages = {401: "로그인이 필요합니다.", 429: "AI가 다른 요청을 처리 중입니다. 잠시 후 다시 시도하세요.", 503: "Google Drive에 저장하거나 읽은 결과를 확인할 수 없습니다. 일정을 새로고침해 확인하세요."};
+    throw new Error(messages[response.status] || "요청을 처리하지 못했습니다.");
+  }
+  return response.status === 204 ? null : response.json();
+}
+async function refresh() {
+  const result = await api("tasks");
+  today = result.today;
+  items = result.tasks;
+  if (!selected) {
+    setDate(today);
+    el("goto-today").disabled = false;
+  }
+  render();
+}
+function node(tag, text) {
+  const element = document.createElement(tag);
+  element.textContent = text;
+  return element;
+}
+async function change(action) {
+  try {
+    await action();
+    await refresh();
+    el("status").textContent = "";
+  } catch (error) {
+    el("status").textContent = error.message;
+  }
+}
+function setDate(date) {
+  selected = date;
+  const [year, month] = date.split("-").map(Number);
+  page = new Date(year, month - 1, 1);
+}
+function render() {
+  const y = page.getFullYear(), m = page.getMonth();
+  el("month").textContent = y + "년 " + (m + 1) + "월";
+  const calendar = el("calendar");
+  calendar.replaceChildren(...[..."일월화수목금토"].map(day => node("small", day)));
+  for (let i = 0; i < page.getDay(); i++) calendar.append(node("span", ""));
+  const counts = new Map();
+  items.forEach(item => counts.set(item.day, (counts.get(item.day) || 0) + 1));
+  for (let day = 1; day <= new Date(y, m + 1, 0).getDate(); day++) {
+    const key = format(y, m + 1, day), button = node("button", day);
+    const count = counts.get(key);
+    if (count) button.append(node("small", count + "건"));
+    button.setAttribute("aria-pressed", String(key === selected));
+    if (key === today) button.setAttribute("aria-current", "date");
+    button.onclick = () => {
+      selected = key;
+      render();
+      el("calendar").querySelector('[aria-pressed="true"]').focus();
+    };
+    calendar.append(button);
+  }
+  el("selected").textContent = selected;
+  const list = el("tasks");
+  list.replaceChildren();
+  const selectedItems = items.filter(item => item.day === selected);
+  const completed = selectedItems.filter(item => item.done).length;
+  el("progress").textContent = selectedItems.length ? completed + "건 완료 / 전체 " + selectedItems.length + "건" : "";
+  for (const item of selectedItems) {
+    const row = node("li", ""), label = node("label", ""), check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = Boolean(item.done);
+    check.onchange = async () => {
+      check.disabled = true;
+      try {
+        await api("tasks/" + item.id, "PATCH", {done: check.checked});
+        await refresh();
+        el("status").textContent = "";
+      } catch (error) {
+        check.checked = Boolean(item.done);
+        el("status").textContent = error.message;
+      } finally {check.disabled = false;}
+    };
+    label.append(check, " " + [item.time, item.title].filter(Boolean).join(" "));
+    const remove = node("button", "삭제");
+    remove.onclick = () => change(() => api("tasks/" + item.id, "DELETE"));
+    row.append(label, node("small", item.category), remove);
+    list.append(row);
+  }
+  if (!list.children.length) list.append(node("li", "저장된 일정이 없습니다."));
+  const past = items.filter(item => !item.done && item.day < today);
+  el("carry").hidden = !past.length;
+  el("overdue").replaceChildren(...past.map(item => {
+    const row = node("li", ""), label = node("label", ""), check = document.createElement("input");
+    check.type = "checkbox";
+    check.value = item.id;
+    label.append(check, " " + item.day + " " + item.title);
+    row.append(label);
+    return row;
+  }));
+  el("move").disabled = selected < today;
+}
+el("goto-today").onclick = () => {setDate(today); render();};
+el("previous").onclick = () => {page.setMonth(page.getMonth() - 1); render();};
+el("next").onclick = () => {page.setMonth(page.getMonth() + 1); render();};
+el("move").onclick = () => {
+  const ids = [...el("overdue").querySelectorAll(":checked")].map(input => Number(input.value));
+  if (!ids.length) {el("status").textContent = "옮길 일정을 선택하세요."; return;}
+  change(() => api("tasks/carry", "POST", {ids, day: selected}));
+};
+function bubble(label, message, className) {
+  const element = node("p", "");
+  element.className = "bubble " + className;
+  const speaker = node("span", label);
+  speaker.className = "speaker";
+  element.append(speaker, message);
+  return element;
+}
+function showTurn(message, result) {
+  const turn = node("div", "");
+  turn.className = "turn";
+  turn.append(bubble("나", message, "user"), bubble("AI 비서", result.reply, "assistant"));
+  if (result.engine === "fallback" || result.engine === "codex-cli") {
+    const engine = node("small", result.engine === "codex-cli" ? "Codex CLI" : "기본 엔진");
+    engine.className = "engine";
+    turn.append(engine);
+  }
+  if (result.tasks.length) {
+    turn.append(node("strong", result.tasks.length + "건 저장"));
+    const saved = node("ul", "");
+    saved.className = "saved";
+    for (const task of result.tasks) {
+      const button = node("button", [task.day, task.time, task.title, task.category].filter(Boolean).join(" · "));
+      button.onclick = async () => {
+        setDate(task.day);
+        try {
+          await refresh();
+          el("status").textContent = "";
+          el("selected").focus();
+        } catch (error) {
+          el("status").textContent = error.message;
+        }
+      };
+      const row = node("li", "");
+      row.append(button);
+      saved.append(row);
+    }
+    turn.append(saved);
+  }
+  const transcript = el("transcript");
+  transcript.append(turn);
+  transcript.scrollTop = transcript.scrollHeight;
+}
+const examples = [...document.querySelectorAll("[data-example]")];
+for (const example of examples) {
+  example.onclick = () => {
+    el("message").value = example.dataset.example;
+    el("message").focus();
+  };
+}
+function lockInput(locked) {
+  el("send").disabled = locked;
+  el("message").readOnly = locked;
+  for (const example of examples) example.disabled = locked;
+}
+el("chat").onsubmit = async event => {
+  event.preventDefault();
+  const message = el("message").value.trim();
+  if (!message || el("send").disabled) return;
+  lockInput(true);
+  el("reply").textContent = "일정을 정리하는 중입니다.";
+  try {
+    const result = await api("chat", "POST", {message, history});
+    history.push({message, reply: result.reply});
+    if (history.length > 4) history.shift();
+    showTurn(message, result);
+    el("reply").textContent = result.tasks.length ? "" : "새로 저장한 일정이 없습니다.";
+    el("message").value = "";
+    await refresh().catch(error => {el("status").textContent = error.message;});
+  } catch (error) {el("reply").textContent = error.message;}
+  finally {lockInput(false);}
+};
+refresh().catch(error => {el("status").textContent = error.message;});
+api("weather").then(weather => {
+  el("weather").textContent = weather.region + " " + weather.temperature + "°C · 추천 " + weather.outfit;
+}).catch(() => {el("weather").textContent = "날씨 정보를 가져오지 못했습니다.";});
+</script>
+</html>

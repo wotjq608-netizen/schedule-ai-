@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로그인 · 개인 AI 비서</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;background:#f2f5f0;color:#192b25;font:16px system-ui,sans-serif}
+main{width:min(100%,420px);background:white;border:1px solid #d9e4dc;border-radius:20px;padding:clamp(20px,6vw,36px)}h1{margin:0;font-size:30px}p{line-height:1.55;margin:12px 0 22px;color:#415b50}
+.action{display:block;padding:14px 18px;text-align:center;border-radius:10px;background:#fee500;color:#191919;font-weight:700;text-decoration:none}
+.action:hover{background:#f3dc08}.action:focus-visible{outline:3px solid #327553;outline-offset:3px}#notice:empty{display:none}small{display:block;margin-top:18px;color:#415b50}
+</style>
+</head>
+<body>
+<main>
+<h1>개인 AI 비서</h1>
+<p>로그인하고 나만의 대화와 일정을 관리하세요.</p>
+<p id="notice" role="alert"><!-- login-notice --></p>
+<!-- login-action -->
+<small>일정은 로그인한 계정별로 저장됩니다.</small>
+</main>
+</body>
+</html>

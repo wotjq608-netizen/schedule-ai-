@@ -1,0 +1,26 @@
+# 비밀 설정
+.env
+
+# 데이터베이스
+*.db
+*.sqlite
+*.sqlite3
+
+# 로그
+*.log
+server.pid
+server.lock
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 카카오 OAuth 임시
+codex-auth/
+openai-auth/
+
+# 테스트 임시
+.pytest_cache/
