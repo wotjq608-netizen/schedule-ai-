@@ -69,3 +69,23 @@ API 키가 비어 있으면 규칙 기반 기본 엔진이 일정을 추출합�
 기존 관리자 일정은 DB에 보존됩니다. 본인 카카오 계정의 앱별 사용자 ID가 확인되면 `KAKAO_LEGACY_OWNER_ID`에 그 값을 넣어 기존 일정을 해당 계정으로 한 번 옮길 수 있습니다. 옮긴 뒤 이 변수를 비웁니다. 값이 비어 있으면 이전 일정은 카카오 계정 화면에 표시되지 않습니다. SQLite와 Drive 모드에서 모두 적용됩니다. 카카오 로그인 모드에서는 관리자 Basic 인증만으로 일정 API에 들어갈 수 없습니다.
 
 미인증 HTTPS 검사 결과는 관리자 모드에서 `401`, 카카오 모드에서 로그인 페이지로 이동하는 `303`입니다. 로컬에서 테스트를 실행하려면 `.venv/bin/python -B -m unittest -v`를 사용합니다. 가상환경이 없다면 `python3 -m venv .venv`로 만든 뒤 `.venv/bin/python -m pip install -r requirements.txt`를 실행합니다.
+
+## 관리자 로그인 기록
+
+로그인 화면의 **관리자 모드** 링크 또는 `/admin`에서 서버의 `ADMIN_USER`와 `ADMIN_PASS`로 인증합니다. 카카오 세션은 관리자 권한을 부여하지 않습니다. 배포 환경의 비밀 설정에 관리자 계정을 설정하고, 외부에 공개할 때는 다른 곳에서 사용하지 않은 비밀번호를 사용합니다.
+
+카카오 인증을 마칠 때마다 한국 표준시 기준 로그인 시각과 계정을 구별할 수 있는 식별자를 기록합니다. 같은 계정의 식별자를 유지하려면 `SESSION_SECRET`을 계속 사용합니다. 로그인 기록은 일정과 같은 설정의 SQLite 또는 Drive 저장소에 보관됩니다. 기존 로그인은 소급해서 기록하지 않습니다.
+
+## Playwright
+
+GitHub Actions는 푸시와 PR에서 Python 회귀 테스트와 Chromium 로그인 테스트를 실행합니다. 브라우저 테스트는 임시 DB와 모의 카카오 OAuth 응답을 사용합니다.
+
+로컬에서 Python 의존성을 설치하고 OpenSSL을 PATH에 둔 뒤 아래 명령을 실행합니다.
+
+```sh
+npm ci
+npx playwright install chromium
+npm test
+```
+
+저장소의 `.codex/config.toml`은 이 프로젝트를 신뢰한 Codex 세션에서 Playwright MCP를 격리 프로필로 실행합니다. 터미널에서는 `npm run mcp`로 같은 버전의 서버를 시작할 수 있습니다.

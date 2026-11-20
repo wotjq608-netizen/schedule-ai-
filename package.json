@@ -1,0 +1,14 @@
+{
+  "name": "schedule-ai-server",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "playwright test",
+    "mcp": "playwright-mcp --isolated"
+  },
+  "type": "commonjs",
+  "private": true,
+  "devDependencies": {
+    "@playwright/mcp": "0.0.86",
+    "@playwright/test": "1.65.1"
+  }
+}

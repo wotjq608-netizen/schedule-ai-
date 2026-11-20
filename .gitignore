@@ -24,3 +24,8 @@ openai-auth/
 
 # 테스트 임시
 .pytest_cache/
+
+# Playwright
+node_modules/
+playwright-report/
+test-results/

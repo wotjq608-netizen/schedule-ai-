@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -8,13 +9,14 @@ import secrets
 import sqlite3
 from contextlib import asynccontextmanager, closing, contextmanager
 from datetime import date, datetime, timedelta
+from html import escape
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic
 from pydantic import BaseModel, Field
@@ -28,6 +30,7 @@ load_dotenv(ROOT / ".env")
 DB = ROOT / "agent_server.db"
 KST = ZoneInfo("Asia/Seoul")
 AUTH = HTTPBasic(realm="Personal Dashboard")
+ADMIN_AUTH = HTTPBasic(realm="Dashboard Admin")
 Category = Literal["업무", "학습", "건강", "약속", "생활", "기타"]
 PROVIDERS = [(name, key) for name, key in (
     ("gemini", os.getenv("GEMINI_API_KEY")), ("openai", os.getenv("OPENAI_API_KEY"))
@@ -93,6 +96,9 @@ def prepare_db(db, legacy_owner=None):
     if "owner" not in {row[1] for row in db.execute("PRAGMA table_info(tasks)")}:
         db.execute("ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'legacy'")
     db.execute("CREATE INDEX IF NOT EXISTS tasks_owner_day ON tasks(owner, day, id)")
+    db.execute("""CREATE TABLE IF NOT EXISTS login_history (
+        id INTEGER PRIMARY KEY, account TEXT NOT NULL, logged_in_at TEXT NOT NULL
+    )""")
     if legacy_owner:
         db.execute("UPDATE tasks SET owner = ? WHERE owner = 'legacy'", (legacy_owner,))
     changed = db.execute("PRAGMA schema_version").fetchone()[0] != version or db.total_changes > 0
@@ -162,6 +168,18 @@ async def storage_unavailable(request, exc):
     logging.getLogger("uvicorn.error").warning("Google Drive 저장소 요청 실패")
     return JSONResponse({"detail": "Google Drive 저장소에 연결할 수 없습니다."}, status_code=503)
 
+async def authorized_admin(request, auth):
+    try:
+        credential = await auth(request)
+    except HTTPException:
+        return False
+    user = os.getenv("ADMIN_USER", "")
+    password = os.getenv("ADMIN_PASS", "")
+    valid_user = secrets.compare_digest(credential.username.encode(), user.encode())
+    valid_password = secrets.compare_digest(credential.password.encode(), password.encode())
+    return bool(user and password and valid_user and valid_password)
+
+
 @app.middleware("http")
 async def access_control(request: Request, call_next):
     headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
@@ -171,6 +189,13 @@ async def access_control(request: Request, call_next):
         peer = None
     if peer is None or not any(peer in network for network in ALLOWED):
         return JSONResponse({"detail": "허용된 접속 주소가 아닙니다."}, status_code=403, headers=headers)
+    if request.url.path == "/admin" and request.method == "GET":
+        if not await authorized_admin(request, ADMIN_AUTH):
+            headers["WWW-Authenticate"] = 'Basic realm="Dashboard Admin"'
+            return JSONResponse({"detail": "관리자 인증이 필요합니다."}, status_code=401, headers=headers)
+        response = await call_next(request)
+        response.headers.update(headers)
+        return response
     config = request.app.state.kakao
     if request.method == "GET" and request.url.path in {"/login", "/auth/kakao", kakao_login.CALLBACK}:
         response = await call_next(request)
@@ -187,22 +212,36 @@ async def access_control(request: Request, call_next):
         request.state.owner = owner
         response = await call_next(request)
         response.headers.update(headers)
+        if request.method == "GET" and request.url.path == "/":
+            # The dashboard logout form needs a same-origin Origin header.
+            response.headers["Referrer-Policy"] = "same-origin"
         return response
-    try:
-        credential = await AUTH(request)
-        user = os.getenv("ADMIN_USER", "")
-        password = os.getenv("ADMIN_PASS", "")
-        valid_user = secrets.compare_digest(credential.username.encode(), user.encode())
-        valid_password = secrets.compare_digest(credential.password.encode(), password.encode())
-        if not (user and password and valid_user and valid_password):
-            raise HTTPException(401)
-    except HTTPException:
+    if not await authorized_admin(request, AUTH):
         headers["WWW-Authenticate"] = 'Basic realm="Personal Dashboard"'
         return JSONResponse({"detail": "인증이 필요합니다."}, status_code=401, headers=headers)
     request.state.owner = "legacy"
     response = await call_next(request)
     response.headers.update(headers)
     return response
+
+@app.get("/admin", response_class=HTMLResponse)
+def login_history(before: int | None = Query(default=None, ge=1, le=2**63 - 1)):
+    with connect() as db:
+        if before is None:
+            rows = db.execute("SELECT * FROM login_history ORDER BY id DESC LIMIT 51").fetchall()
+        else:
+            rows = db.execute("SELECT * FROM login_history WHERE id < ? ORDER BY id DESC LIMIT 51",
+                              (before,)).fetchall()
+    table = "".join(
+        f"<tr><td>{escape(row['account'])}</td><td>{escape(row['logged_in_at'])}</td></tr>"
+        for row in rows[:50]
+    ) or '<tr><td colspan="2">??? ??? ????.</td></tr>'
+    links = ['<a href="/admin">?? ??</a>'] if before else []
+    if len(rows) == 51:
+        links.append(f'<a href="/admin?before={rows[49]["id"]}">?? ??</a>')
+    page = (ROOT / "admin.html").read_text(encoding="utf-8-sig")
+    return page.replace("<!-- rows -->", table).replace("<!-- pages -->", "".join(links))
+
 
 @app.get("/login", response_class=HTMLResponse)
 def login(request: Request, error: str = ""):
@@ -251,8 +290,13 @@ def finish_kakao(request: Request, state: str = "", code: str = "", error: str =
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         logging.getLogger("uvicorn.error").warning("카카오 로그인 토큰 교환 또는 사용자 확인 실패")
         return response
+    owner = account_owner(config, ident)
+    account = hmac.digest(config.signing_secret.encode(), owner.encode(), "sha256").hex()[:24]
+    with connect() as db:
+        db.execute("INSERT INTO login_history(account, logged_in_at) VALUES (?, ?)",
+                   (account, datetime.now(KST).isoformat(timespec="seconds")))
     response.headers["location"] = "/"
-    set_login_cookie(response, kakao_login.SESSION_COOKIE, config.sign(account_owner(config, ident), "session"),
+    set_login_cookie(response, kakao_login.SESSION_COOKIE, config.sign(owner, "session"),
                      kakao_login.SESSION_SECONDS)
     return response
 
