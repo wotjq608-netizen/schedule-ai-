@@ -20,6 +20,35 @@ class StorageError(Exception):
     """Drive did not confirm a usable database or a completed write."""
 
 
+def describe_http_error(response, token_request):
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    error = payload.get("error") if isinstance(payload, dict) else None
+    reason = ""
+    if token_request:
+        if error in ("invalid_grant", "invalid_client", "unauthorized_client"):
+            reason = error
+    elif isinstance(error, dict):
+        if error.get("status") == "PERMISSION_DENIED":
+            reason = "PERMISSION_DENIED"
+        known = {
+            "accessNotConfigured", "SERVICE_DISABLED", "insufficientPermissions",
+            "ACCESS_TOKEN_SCOPE_INSUFFICIENT", "rateLimitExceeded",
+            "userRateLimitExceeded", "storageQuotaExceeded",
+        }
+        for name in ("details", "errors"):
+            entries = error.get(name)
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                value = entry.get("reason") if isinstance(entry, dict) else None
+                if isinstance(value, str) and value in known:
+                    return value
+    return reason
+
+
 class DriveStorage:
     def __init__(self, client_id, client_secret, refresh_token):
         self.credentials = {
@@ -42,22 +71,32 @@ class DriveStorage:
         return cls(*values)
 
     def request(self, method, url, **kwargs):
+        stage = f"Drive {method}"
         try:
             with httpx.Client(timeout=10, trust_env=False) as client:
                 if time.monotonic() >= self.expires:
+                    stage = "OAuth token refresh"
                     response = client.post(TOKEN_URL, data=self.credentials)
                     response.raise_for_status()
                     token = response.json()
                     self.token = token["access_token"]
                     self.expires = time.monotonic() + max(0, int(token["expires_in"]) - 60)
+                stage = f"Drive {method}"
                 headers = {"Authorization": f"Bearer {self.token}", **kwargs.pop("headers", {})}
                 response = client.request(method, url, headers=headers, **kwargs)
                 if response.status_code == 401:
                     self.expires = 0
                 response.raise_for_status()
                 return response
-        except (httpx.HTTPError, KeyError, ValueError, TypeError):
-            raise StorageError("Google Drive 요청을 확인할 수 없습니다.") from None
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            reason = describe_http_error(exc.response, stage == "OAuth token refresh")
+            suffix = f", {reason}" if reason else ""
+            raise StorageError(f"Google Drive {stage} failed (HTTP {status}{suffix}).") from None
+        except httpx.RequestError as exc:
+            raise StorageError(f"Google Drive {stage} failed ({type(exc).__name__}).") from None
+        except (KeyError, ValueError, TypeError):
+            raise StorageError(f"Google Drive {stage} returned an invalid response.") from None
 
     def find_file(self):
         ids = []
