@@ -1,6 +1,14 @@
 const { test, expect } = require('@playwright/test');
 
 test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있다', async ({ page, browser, baseURL }) => {
+  await page.addInitScript(() => {
+    window.alarmTones = 0;
+    const start = OscillatorNode.prototype.start;
+    OscillatorNode.prototype.start = function (...args) {
+      window.alarmTones++;
+      return start.apply(this, args);
+    };
+  });
   await page.goto('/');
   await expect(page).toHaveURL(/\/login$/);
 
@@ -75,6 +83,20 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
   await send('네');
   await expect(log).toContainText('웹 알람을 설정했어요');
   await send('내일 8시에 알람 맞춰 줘');
+  expect((await (await page.request.get('/api/assistant/alarms')).json()).alarms).toHaveLength(2);
+  const beforeCountdown = Date.now();
+  await send('10초뒤에 알람 설정 해줘');
+  await expect(log).toContainText(/10초 뒤 .*웹 알람을 설정했어요/);
+  const alarmList = await (await page.request.get('/api/assistant/alarms')).json();
+  const [countdown] = alarmList.alarms;
+  expect(Date.parse(countdown.due) - beforeCountdown).toBeGreaterThanOrEqual(9900);
+  expect(Date.parse(countdown.due) - beforeCountdown).toBeLessThan(12000);
+  const early = await page.request.post(`/api/assistant/alarms/${countdown.id}/ring`, {
+    headers: { Origin: baseURL }, data: {}
+  });
+  expect((await early.json()).ring).toBe(false);
+  await expect(log).toContainText('알람 ·', { timeout: 13000 });
+  expect(await page.evaluate(() => window.alarmTones)).toBe(4);
   expect((await (await page.request.get('/api/assistant/alarms')).json()).alarms).toHaveLength(2);
   await send('저소음 키보드 찜해줘');
   await expect(log.getByRole('link', { name: '상품평 출처' })).toHaveCount(3);

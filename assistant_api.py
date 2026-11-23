@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 KST = ZoneInfo("Asia/Seoul")
 PRICE_TIERS = ("실속형", "중간 가격대", "프리미엄")
@@ -40,7 +40,14 @@ def prepare(db):
 
 
 class Alarm(BaseModel):
-    time: datetime
+    time: datetime | None = None
+    delay_seconds: int | None = Field(None, strict=True, ge=1, le=366 * 86400)
+
+    @model_validator(mode="after")
+    def check_time(self):
+        if (self.time is None) == (self.delay_seconds is None):
+            raise ValueError("알람의 시각 또는 남은 시간을 하나만 지정하세요.")
+        return self
 
 
 class Prompt(BaseModel):
@@ -481,26 +488,29 @@ def make_router(connect):
     def alarms(request: Request):
         now = datetime.now(KST)
         with connect() as db:
-            rows = db.execute("SELECT id, due FROM assistant_alarms WHERE owner=? AND done=0 AND due>=? ORDER BY due LIMIT 100",
+            rows = db.execute("""SELECT id, due FROM assistant_alarms
+                WHERE owner=? AND done=0 AND due>=? ORDER BY julianday(due) LIMIT 100""",
                               (request.state.owner, (now - timedelta(days=7)).isoformat(timespec="minutes")))
             return {"alarms": [dict(row) for row in rows]}
 
     @router.post("/alarms")
     def add_alarm(request: Request, payload: Alarm):
-        now = datetime.now(KST)
-        if payload.time.tzinfo is None:
+        if payload.time is not None and payload.time.tzinfo is None:
             raise HTTPException(422, "알람 시간대가 필요합니다.")
-        due = payload.time.astimezone(KST)
-        if not now < due <= now + timedelta(days=366):
-            raise HTTPException(422, "앞으로 1년 안의 시간을 입력하세요.")
-        stamp = due.isoformat(timespec="minutes")
         with connect() as db:
+            now = datetime.now(KST)
+            due = (now + timedelta(seconds=payload.delay_seconds) if payload.delay_seconds is not None
+                   else payload.time.astimezone(KST))
+            if not now < due <= now + timedelta(days=366):
+                raise HTTPException(422, "앞으로 1년 안의 시간을 입력하세요.")
+            stamp = due.isoformat(timespec="milliseconds")
             owner = request.state.owner
             db.execute("DELETE FROM assistant_alarms WHERE owner=? AND due<?",
                        (owner, (now - timedelta(days=7)).isoformat(timespec="minutes")))
-            existing = db.execute("SELECT id FROM assistant_alarms WHERE owner=? AND due=?", (owner, stamp)).fetchone()
+            existing = db.execute("""SELECT id, due FROM assistant_alarms
+                WHERE owner=? AND julianday(due)=julianday(?)""", (owner, stamp)).fetchone()
             if existing:
-                return {"id": existing["id"], "due": stamp}
+                return dict(existing)
             if db.execute("SELECT count(*) FROM assistant_alarms WHERE owner=?", (owner,)).fetchone()[0] >= 100:
                 raise HTTPException(409, "알람 목록이 가득 찼습니다.")
             row = db.execute("INSERT INTO assistant_alarms(owner,due) VALUES(?,?)", (owner, stamp))
@@ -508,11 +518,20 @@ def make_router(connect):
 
     @router.post("/alarms/{alarm_id}/ring")
     def ring(request: Request, alarm_id: int):
-        now = datetime.now(KST).isoformat(timespec="minutes")
         with connect() as db:
-            changed = db.execute("UPDATE assistant_alarms SET done=1 WHERE owner=? AND id=? AND done=0 AND due<=?",
-                                 (request.state.owner, alarm_id, now)).rowcount
-            return {"ring": bool(changed)}
+            now = datetime.now(KST)
+            owner = request.state.owner
+            changed = db.execute("""UPDATE assistant_alarms SET done=1
+                WHERE owner=? AND id=? AND done=0 AND julianday(due)<=julianday(?)""",
+                (owner, alarm_id, now.isoformat(timespec="milliseconds"))).rowcount
+            if changed:
+                return {"ring": True}
+            waiting = db.execute("SELECT due FROM assistant_alarms WHERE owner=? AND id=? AND done=0",
+                                 (owner, alarm_id)).fetchone()
+            if waiting:
+                remaining = (datetime.fromisoformat(waiting["due"]) - now).total_seconds()
+                return {"ring": False, "retry_after_ms": max(50, int(remaining * 1000) + 10)}
+            return {"ring": False}
 
     @router.get("/wishlist")
     def wishlist(request: Request):

@@ -3,7 +3,7 @@
   const get = name => document.getElementById("assistant-" + name);
   const panel = get("panel"), log = get("log"), input = get("input"), status = get("status");
   const korea = new Intl.DateTimeFormat("sv-SE", {timeZone:"Asia/Seoul", year:"numeric", month:"2-digit", day:"2-digit"});
-  const alarmFormat = new Intl.DateTimeFormat("ko-KR", {timeZone:"Asia/Seoul", dateStyle:"long", timeStyle:"short"});
+  const alarmFormat = new Intl.DateTimeFormat("ko-KR", {timeZone:"Asia/Seoul", dateStyle:"long", timeStyle:"medium"});
   const cities = "서울 부산 인천 대구 대전 광주 울산 세종 수원 제주 춘천 청주 전주 포항 창원 성남".split(" ");
   const history = [];
   const {scope, guest} = panel.closest(".assistant-widget").dataset;
@@ -28,7 +28,7 @@
     } catch {}
   }
   let pending = null, busy = false, audioContext, alarmTimer, checking = false;
-  let nextAlarms = [];
+  let nextAlarms = [], alarmRevision = 0;
   const setOpen = (open, focus = true) => {
     panel.hidden = !open;
     get("open").setAttribute("aria-expanded", String(open));
@@ -196,10 +196,24 @@
     return iso;
   }
 
-  async function createAlarm(time, voice) {
-    await api("alarms", {time});
-    bubble(alarmFormat.format(new Date(time)) + "에 웹 알람을 설정했어요. 페이지가 열려 있고 기기가 깨어 있을 때 울립니다.", false, voice);
-    await refreshAlarms();
+  function relativeAlarm(text) {
+    const interval = text.match(/((?:(?:\d{1,7}|십|열)\s*(?:시간|분|초)\s*)+)(?:뒤|후|지나면|있다가)/);
+    if (!interval) return null;
+    const multipliers = {"시간":3600, "분":60, "초":1};
+    const parts = [...interval[1].matchAll(/(\d{1,7}|십|열)\s*(시간|분|초)/g)];
+    return parts.reduce((sum, [, count, unit]) =>
+      sum + (count === "십" || count === "열" ? 10 : Number(count)) * multipliers[unit], 0);
+  }
+
+  async function createAlarm(value, voice) {
+    const relative = typeof value === "number";
+    const alarm = await api("alarms", relative ? {delay_seconds:value} : {time:value});
+    alarmRevision++;
+    nextAlarms = [...nextAlarms.filter(item => item.id !== alarm.id), alarm]
+      .sort((a, b) => Date.parse(a.due) - Date.parse(b.due));
+    bubble((relative ? value + "초 뒤 " : "") + alarmFormat.format(new Date(alarm.due)) +
+      "에 웹 알람을 설정했어요. 페이지가 열려 있고 기기가 깨어 있을 때 울립니다.", false, voice);
+    scheduleRing();
   }
 
   function unlockSound() {
@@ -238,8 +252,13 @@
     try {
       while (nextAlarms.length && Date.parse(nextAlarms[0].due) <= Date.now()) {
         const alarm = nextAlarms[0];
-        const {ring} = await api("alarms/" + alarm.id + "/ring", {});
-        nextAlarms.shift();
+        const {ring, retry_after_ms} = await api("alarms/" + alarm.id + "/ring", {});
+        if (retry_after_ms) {
+          alarmTimer = setTimeout(checkAlarms, Math.min(2147483647, retry_after_ms));
+          return;
+        }
+        alarmRevision++;
+        nextAlarms = nextAlarms.filter(item => item.id !== alarm.id);
         if (!ring) continue;
         setOpen(true, false);
         bubble("알람 · " + alarmFormat.format(new Date(alarm.due)), false, !ringSound());
@@ -253,8 +272,10 @@
   }
 
   async function refreshAlarms() {
+    const revision = alarmRevision;
     try {
       const {alarms} = await api("alarms");
+      if (revision !== alarmRevision) return;
       nextAlarms = alarms;
       await checkAlarms();
     } catch {}
@@ -345,6 +366,20 @@
       return;
     }
     if (/찜\s*목록|위시리스트/.test(text) && !/추가|담아|넣어|저장/.test(text)) return wishlist();
+    const delay = relativeAlarm(text);
+    if (delay !== null && (/알람|알림|타이머/.test(text) || pending?.kind === "alarm-time")) {
+      if (delay < 1 || delay > 366 * 86400) {
+        bubble("1초 이상, 1년 이내의 알람 시간을 입력하세요.", false, voice);
+        return;
+      }
+      if (question.test(text)) {
+        pending = {kind:"alarm", time:delay};
+        bubble(delay + "초 뒤에 알람을 설정할까요? ‘네’라고 답해 주세요.", false, voice);
+        return;
+      }
+      pending = null;
+      return createAlarm(delay, voice);
+    }
     const intent = (await api("interpret", {text}).catch(() => ({}))).intent;
     if (intent?.action === "cancel") {
       pending = null;
