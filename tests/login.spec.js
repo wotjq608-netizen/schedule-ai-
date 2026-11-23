@@ -20,9 +20,14 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
   redirect.searchParams.set('state', authorize.searchParams.get('state'));
   redirect.searchParams.set('code', 'test-authorization-code');
   await page.goto(redirect.href);
-  await expect(page).toHaveURL(baseURL + '/');
+  await expect(page).toHaveURL(baseURL + '/architecture');
   expect((await page.request.get('/api/tasks')).status()).toBe(200);
   expect((await page.request.get('/admin')).status()).toBe(401);
+  await expect(page.getByRole('heading', { name: '서비스 구성도' })).toBeVisible();
+  await page.getByRole('link', { name: '일정 관리', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '날씨와 착장 색 조합' })).toBeVisible();
+  await page.getByRole('link', { name: '자료 정리', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '회의·발표 자료 정리' })).toBeVisible();
   await page.getByRole('button', { name: '로그아웃' }).click();
   await expect(page).toHaveURL(/\/login$/);
   expect((await page.request.get('/api/tasks')).status()).toBe(401);

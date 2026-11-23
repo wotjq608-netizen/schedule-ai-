@@ -89,3 +89,15 @@ npm test
 ```
 
 저장소의 `.codex/config.toml`은 이 프로젝트를 신뢰한 Codex 세션에서 Playwright MCP를 격리 프로필로 실행합니다. 터미널에서는 `npm run mcp`로 같은 버전의 서버를 시작할 수 있습니다.
+
+## Windows에서 네 페이지 실행
+
+폴더에서 PowerShell을 열고 `powershell -NoProfile -ExecutionPolicy Bypass -File .\start_windows.ps1`을 실행합니다.
+카카오 설정이 없는 로컬 모드에서는 콘솔이 보여 주는 계정으로 로그인합니다. 관리자 아이디와 암호를 직접 관리하려면 `env.example`을 `.env`로 복사하고 `ADMIN_USER`, `ADMIN_PASS`를 설정하세요.
+
+1. `/login` — 카카오 로그인 또는 로컬 관리자 인증
+2. `/architecture` — 브라우저·호스팅·터널·서버·외부 API 연결 구성도
+3. `/schedule` — 기존 일정 기능 및 서울 기본 날씨, 기온에 따른 톤온톤·3색 조합
+4. `/materials` — 원고나 메모 정리, 음성 전사, 결과 복사·텍스트 저장
+
+음성 전사에는 서버의 `OPENAI_API_KEY`가 필요합니다. 파일 제한은 24 MB이며, 성공하면 편집 가능한 전사문이 입력창에 추가됩니다. 자료 정리는 OpenAI 또는 Gemini를 사용하며, 둘 다 설정하지 않으면 기본 문장 분류를 사용합니다. 외부 서비스를 사용할 때 전사 파일이나 정리할 텍스트를 해당 API에 전송합니다. 이 앱은 자료 정리 요청이나 결과를 일정 DB에 저장하지 않습니다.

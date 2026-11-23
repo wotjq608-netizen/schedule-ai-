@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>자료 정리 · 개인 AI 비서</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f2f5f0;color:#192b25;font:16px/1.55 system-ui,sans-serif}
+main{max-width:1080px;margin:auto;padding:clamp(16px,5vw,54px)}
+h1{font-size:clamp(28px,5vw,46px);margin:0}h2{font-size:20px;margin:0 0 12px}
+p{margin:8px 0 16px;color:#415b50}.panels{display:grid;grid-template-columns:1fr 1fr;gap:16px}.panel{min-width:0;background:#fff;border:1px solid #d9e4dc;border-radius:18px;padding:clamp(14px,3vw,24px)}
+label{display:block;font-weight:650;margin:14px 0 5px}textarea,select,input,button{font:inherit;max-width:100%;color:inherit}
+textarea,select,button{border:1px solid #a9bfb1;border-radius:8px;background:#fff;padding:8px}
+textarea{display:block;width:100%;min-height:190px;resize:vertical}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+button{cursor:pointer}.primary{background:#1d573e;color:#fff}.primary:hover{background:#14432f}button:disabled{opacity:.55;cursor:default}
+.help{font-size:.85rem;margin:5px 0 12px}.output{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:16px}.status{min-height:1.6em;margin:12px 0 0}
+@media(max-width:680px){.panels{grid-template-columns:1fr}}
+
+.workspace-nav{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 24px}
+.workspace-nav a,.workspace-nav button{display:inline-block;border:1px solid #d9e4dc;border-radius:9px;padding:7px 10px;background:#fff;color:#1d573e;text-decoration:none;font:inherit;cursor:pointer}
+.workspace-nav a[aria-current=page]{background:#1d573e;color:#fff;border-color:#1d573e}
+.workspace-nav form{margin-left:auto}
+</style>
+</head>
+<body>
+<main>
+<!-- workspace-nav -->
+<h1>회의·발표 자료 정리</h1>
+<p>메모나 원고를 붙여넣거나, 녹음 파일을 글로 옮겨 회의록이나 발표 개요로 정리하세요.</p>
+<div class="panels">
+<section class="panel">
+<h2>원본 자료</h2>
+<form id="material-form">
+<label for="kind">결과 형식</label>
+<select id="kind"><option value="meeting">회의록</option><option value="presentation">발표 개요</option></select>
+<label for="audio">녹음 파일</label>
+<input id="audio" type="file" accept=".flac,.mp3,.mp4,.mpeg,.mpga,.m4a,.ogg,.wav,.webm" aria-describedby="audio-help">
+<p class="help" id="audio-help">최대 24 MB. 음성 전사 시 OpenAI로 파일을 전송합니다.</p>
+<button id="transcribe" type="button">음성을 글로 옮기기</button>
+<label for="source">메모·원고·전사문</label>
+<textarea id="source" maxlength="60000" required placeholder="회의에서 논의한 내용이나 발표 원고를 입력하세요."></textarea>
+<p class="help">AI 정리를 사용하면 입력한 텍스트가 설정된 OpenAI 또는 Gemini 서비스에 전송됩니다.</p>
+<div class="actions"><button id="organize" class="primary" type="submit">자료 정리하기</button></div>
+<p class="status" id="status" role="status"></p>
+</form>
+</section>
+<section class="panel">
+<h2>정리 결과</h2>
+<p id="engine">정리한 글을 여기에서 확인할 수 있습니다.</p>
+<div class="actions"><button id="copy" disabled>복사</button><button id="download" disabled>텍스트 저장</button></div>
+<div id="output" class="output" tabindex="0"></div>
+</section>
+</div>
+</main>
+<script>
+const el = id => document.getElementById(id);
+const source = el("source"), audio = el("audio"), kind = el("kind"), output = el("output"), status = el("status");
+const controls = [el("transcribe"), el("organize"), source, audio, kind];
+
+async function api(action, options) {
+  const response = await fetch("/api/materials/" + action, {method: "POST", ...options});
+  if (response.status === 401) throw new Error("로그인이 만료되었습니다. 다시 로그인하세요.");
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "요청을 처리하지 못했습니다.");
+  return data;
+}
+async function process(message, action) {
+  controls.forEach(control => { control.disabled = true; });
+  status.textContent = message;
+  try {
+    await action();
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    controls.forEach(control => { control.disabled = false; });
+  }
+}
+el("transcribe").addEventListener("click", () => {
+  const file = audio.files[0];
+  if (!file || !file.size || file.size > 24_000_000) {
+    status.textContent = "내용이 있는 24 MB 이하의 녹음 파일을 선택하세요.";
+    return;
+  }
+  const ext = file.name.split(".").pop().toLowerCase();
+  process("음성을 전사하는 중입니다…", async () => {
+    const result = await api("transcribe?extension=" + encodeURIComponent(ext), {
+      headers: {"Content-Type": "application/octet-stream"},
+      body: file
+    });
+    const combined = [source.value.trim(), result.text].filter(Boolean).join("\n\n");
+    source.value = combined;
+    audio.value = "";
+    status.textContent = combined.length > 60000
+      ? "전사가 끝났습니다. 60,000자 이하로 줄인 뒤 정리하세요."
+      : "전사가 끝났습니다. 문장을 확인하고 자료 정리하기를 누르세요.";
+  });
+});
+let savedKind = "meeting";
+el("material-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const text = source.value.trim();
+  if (!text || text.length > 60000) {
+    status.textContent = "정리할 텍스트를 1~60,000자로 입력하세요.";
+    return;
+  }
+  process("자료를 정리하는 중입니다…", async () => {
+    const result = await api("summarize", {
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({kind: kind.value, text})
+    });
+    output.textContent = result.summary;
+    savedKind = kind.value;
+    el("engine").textContent = result.engine === "basic" ? "기본 정리 · 입력 문장 기준" : "AI 정리";
+    el("copy").disabled = el("download").disabled = false;
+    status.textContent = "정리가 완료되었습니다.";
+  });
+});
+el("copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(output.textContent);
+    status.textContent = "결과를 복사했습니다.";
+  } catch {
+    status.textContent = "복사할 수 없습니다. 텍스트 저장 버튼을 이용하세요.";
+  }
+});
+el("download").addEventListener("click", () => {
+  const url = URL.createObjectURL(new Blob([output.textContent], {type: "text/plain;charset=utf-8"}));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = savedKind === "meeting" ? "회의록.txt" : "발표 개요.txt";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+</script>
+</body>
+</html>

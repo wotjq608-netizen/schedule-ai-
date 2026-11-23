@@ -82,7 +82,7 @@ class DashboardTests(unittest.TestCase):
                     state = parse_qs(location.query)["state"][0]
                     response = client.get("/auth/kakao/callback", params={"state": state, "code": expected_code},
                                           follow_redirects=False)
-                    self.assertEqual(response.headers["location"], "/")
+                    self.assertEqual(response.headers["location"], "/architecture")
                     self.assertIn("HttpOnly", response.headers["set-cookie"])
                     self.assertIn("Secure", response.headers["set-cookie"])
 

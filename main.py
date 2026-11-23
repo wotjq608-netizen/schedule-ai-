@@ -17,12 +17,13 @@ from zoneinfo import ZoneInfo
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic
 from pydantic import BaseModel, Field
 
 import codex_reply
 import kakao_login
+import materials
 from drive_storage import DriveStorage, StorageError
 
 ROOT = Path(__file__).resolve().parent
@@ -163,6 +164,10 @@ async def lifespan(app):
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
+app.include_router(materials.router)
+PAGES = {"/architecture": "구성도", "/schedule": "일정 관리", "/materials": "자료 정리"}
+
+
 @app.exception_handler(StorageError)
 async def storage_unavailable(request, exc):
     logging.getLogger("uvicorn.error").warning("Google Drive 저장소 요청 실패")
@@ -204,7 +209,7 @@ async def access_control(request: Request, call_next):
     if config:
         owner = config.verify(request.cookies.get(kakao_login.SESSION_COOKIE), "session", kakao_login.SESSION_SECONDS)
         if not owner:
-            if request.method == "GET" and request.url.path == "/":
+            if request.method == "GET" and request.url.path in {"/", *PAGES}:
                 return RedirectResponse("/login", status_code=303, headers=headers)
             return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401, headers=headers)
         if request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("origin") != config.origin:
@@ -212,11 +217,13 @@ async def access_control(request: Request, call_next):
         request.state.owner = owner
         response = await call_next(request)
         response.headers.update(headers)
-        if request.method == "GET" and request.url.path == "/":
+        if request.method == "GET" and request.url.path in {"/", *PAGES}:
             # The dashboard logout form needs a same-origin Origin header.
             response.headers["Referrer-Policy"] = "same-origin"
         return response
     if not await authorized_admin(request, AUTH):
+        if request.method == "GET" and request.url.path == "/" and "text/html" in request.headers.get("accept", ""):
+            return RedirectResponse("/login", status_code=303, headers=headers)
         headers["WWW-Authenticate"] = 'Basic realm="Personal Dashboard"'
         return JSONResponse({"detail": "인증이 필요합니다."}, status_code=401, headers=headers)
     request.state.owner = "legacy"
@@ -253,8 +260,8 @@ def login(request: Request, error: str = ""):
     if config:
         action = '<a class="action" href="/auth/kakao">카카오로 로그인</a>'
     else:
-        notice = "카카오 로그인 설정을 연결하면 이 화면에서 로그인할 수 있습니다."
-        action = '<a href="/">기존 관리자 로그인</a>'
+        notice = "로컬 모드에서는 관리자 계정으로 로그인합니다."
+        action = '<a class="action" href="/architecture">관리자로 로그인</a>'
     page = (ROOT / "login.html").read_text(encoding="utf-8")
     return page.replace("<!-- login-notice -->", notice).replace("<!-- login-action -->", action)
 
@@ -295,7 +302,7 @@ def finish_kakao(request: Request, state: str = "", code: str = "", error: str =
     with connect() as db:
         db.execute("INSERT INTO login_history(account, logged_in_at) VALUES (?, ?)",
                    (account, datetime.now(KST).isoformat(timespec="seconds")))
-    response.headers["location"] = "/"
+    response.headers["location"] = "/architecture"
     set_login_cookie(response, kakao_login.SESSION_COOKIE, config.sign(owner, "session"),
                      kakao_login.SESSION_SECONDS)
     return response
@@ -377,7 +384,7 @@ def extract(message, history):
         try:
             with httpx.Client(timeout=12, trust_env=False) as client:
                 if provider == "gemini":
-                    model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+                    model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
                     response = client.post(
                         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                         headers={"x-goog-api-key": key},
@@ -411,13 +418,33 @@ def extract(message, history):
             logging.getLogger("uvicorn.error").warning("Codex CLI 응답을 확인할 수 없어 기본 엔진으로 전환합니다.")
     return fallback(message, base), "fallback"
 
+def render_page(request, filename, current):
+    page = (ROOT / filename).read_text(encoding="utf-8")
+    links = []
+    for path, label in PAGES.items():
+        active = ' aria-current="page"' if path == current else ""
+        links.append(f'<a href="{path}"{active}>{label}</a>')
+    if request.app.state.kakao:
+        links.append('<form action="/auth/logout" method="post"><button type="submit">로그아웃</button></form>')
+    nav = '<nav class="workspace-nav" aria-label="페이지">' + "".join(links) + "</nav>"
+    return HTMLResponse(page.replace("<!-- workspace-nav -->", nav))
+
+
 @app.get("/")
+@app.get("/schedule")
 def dashboard(request: Request):
-    if not request.app.state.kakao:
-        return FileResponse(ROOT / "dashboard.html")
-    page = (ROOT / "dashboard.html").read_text(encoding="utf-8")
-    logout_form = '<form action="/auth/logout" method="post"><button type="submit">로그아웃</button></form>'
-    return HTMLResponse(page.replace("<!-- logout -->", logout_form))
+    return render_page(request, "dashboard.html", "/schedule")
+
+
+@app.get("/architecture")
+def architecture(request: Request):
+    return render_page(request, "architecture.html", "/architecture")
+
+
+@app.get("/materials")
+def materials_page(request: Request):
+    return render_page(request, "materials.html", "/materials")
+
 
 @app.post("/chat", include_in_schema=False)
 @app.post("/api/chat")
@@ -477,9 +504,10 @@ def weather():
         response.raise_for_status()
         current = response.json()["current"]
         temperature = float(current["temperature_2m"])
-        outfit = "두꺼운 외투" if temperature < 10 else "가벼운 겉옷" if temperature < 20 else "가벼운 옷차림"
-        if current["precipitation"] > 0:
-            outfit += "과 우산"
-        return {"region": os.getenv("WEATHER_REGION", "서울"), "temperature": temperature, "outfit": outfit}
+        return {
+            "region": os.getenv("WEATHER_REGION", "서울"),
+            "temperature": temperature,
+            "precipitation": float(current["precipitation"]),
+        }
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         raise HTTPException(502, "날씨 정보를 가져오지 못했습니다.")

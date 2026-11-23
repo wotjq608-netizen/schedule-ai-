@@ -2,7 +2,7 @@
 <html lang="ko">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>개인 AI 비서</title>
+<title>일정 관리 · 개인 AI 비서</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#f2f5f0;color:#192b25;font:16px system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:clamp(16px,5vw,54px)}h1{margin:0;font-size:clamp(30px,6vw,48px)}h2{font-size:20px;margin:0 0 16px}.layout{display:grid;grid-template-columns:1fr 1.1fr;gap:16px}section{background:white;border:1px solid #d9e4dc;border-radius:18px;padding:clamp(12px,3vw,24px);min-width:0}.brief{margin:12px 0 24px;color:#415b50}button,textarea{font:inherit;border:1px solid #a9bfb1;border-radius:8px;padding:8px;color:inherit;background:#fff}button{cursor:pointer}button:hover{background:#e3f0e9}textarea{display:block;width:100%;min-height:95px;margin:8px 0;resize:vertical}.primary{background:#1d573e;color:white}.primary:hover{background:#14432f}.month{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;text-align:center}.grid button{padding:5px 0;min-height:46px}.grid button[aria-pressed=true]{background:#d1e8d9;border-color:#327553}.grid small{display:block;font-size:11px}ul{padding:0;list-style:none}li{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #e4ebe6}li label{flex:1;overflow-wrap:anywhere}li small{color:#486358}p{overflow-wrap:anywhere}summary{cursor:pointer;margin:16px 0 8px}button:focus-visible,textarea:focus-visible{outline:3px solid #327553;outline-offset:2px}@media(max-width:740px){.layout{grid-template-columns:1fr}}
 .transcript{display:grid;gap:14px;max-height:28rem;overflow:auto;overscroll-behavior:contain;margin-bottom:16px}
@@ -21,10 +21,26 @@
 .calendar-actions{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:14px}
 .calendar-actions h3{margin:0}
 textarea[readonly],button:disabled{opacity:.7}
+
+.workspace-nav{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 24px}
+.workspace-nav a,.workspace-nav button{display:inline-block;border:1px solid #d9e4dc;border-radius:9px;padding:7px 10px;background:#fff;color:#1d573e;text-decoration:none;font:inherit;cursor:pointer}
+.workspace-nav a[aria-current=page]{background:#1d573e;color:#fff;border-color:#1d573e}
+.workspace-nav form{margin-left:auto}
+
+.weather-card{margin:18px 0}.weather-card .brief{margin:0 0 10px}.palettes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.palette{padding:12px;background:#f3f6f3;border-radius:10px}.palette h3{margin:0 0 8px;font-size:1rem}
+.swatches{display:flex;flex-wrap:wrap;gap:8px 16px}.shade{display:inline-flex;align-items:center;gap:6px;font-size:.88rem}
+.chip{display:inline-block;width:19px;height:19px;border-radius:50%;border:1px solid #5e6b63}
+@media(max-width:640px){.palettes{grid-template-columns:1fr}}
 </style>
 <main>
-<header class="page-header"><h1>개인 AI 비서</h1><!-- logout --></header>
-<p class="brief" id="weather">날씨를 불러오는 중입니다.</p>
+<!-- workspace-nav -->
+<header class="page-header"><h1>일정 관리</h1></header>
+<section class="weather-card" aria-labelledby="weather-heading">
+<h2 id="weather-heading">날씨와 착장 색 조합</h2>
+<p class="brief" id="weather" role="status">날씨를 불러오는 중입니다.</p>
+<div id="palettes" class="palettes"></div>
+</section>
 <div class="layout">
 <section><h2>AI와 일정 정리</h2>
 <p class="engine">AI 비서가 답변합니다. API를 사용할 수 없을 때 서버 설정에 따라 Codex CLI로 답변할 수 있습니다.</p>
@@ -232,8 +248,51 @@ el("chat").onsubmit = async event => {
   finally {lockInput(false);}
 };
 refresh().catch(error => {el("status").textContent = error.message;});
+const palettes = {
+  cold: [
+    [["연회색", "#c7c9cf"], ["차콜", "#343943"], ["먹색", "#23252d"]],
+    [["아이보리", "#f4eedf"], ["네이비", "#253655"], ["버건디", "#743343"]]
+  ],
+  mild: [
+    [["크림", "#f2e5ce"], ["카멜", "#aa7951"], ["다크 브라운", "#52392f"]],
+    [["화이트", "#faf9f6"], ["올리브", "#626747"], ["브라운", "#79503c"]]
+  ],
+  warm: [
+    [["하늘색", "#c1def1"], ["블루 그레이", "#6b8aa3"], ["네이비", "#243657"]],
+    [["크림", "#f5ecd9"], ["연청", "#8aadc8"], ["테라코타", "#aa5541"]]
+  ]
+};
+function showPalettes(temperature, wet) {
+  const season = temperature === null ? "mild" : temperature < 10 ? "cold" : temperature < 20 ? "mild" : "warm";
+  palettes[season].forEach((colors, index) => {
+    const card = document.createElement("article");
+    card.className = "palette";
+    const title = document.createElement("h3");
+    title.textContent = index === 0 ? "톤온톤" : "3색 조합";
+    const row = document.createElement("div");
+    row.className = "swatches";
+    colors.forEach(([color, hex], position) => {
+      const label = document.createElement("span");
+      label.className = "shade";
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.style.backgroundColor = hex;
+      chip.setAttribute("aria-hidden", "true");
+      const slots = ["상의", "하의", wet ? "방수 신발·우산" : "신발·소품"];
+      label.append(chip, slots[position] + " " + color);
+      row.append(label);
+    });
+    card.append(title, row);
+    el("palettes").append(card);
+  });
+}
 api("weather").then(weather => {
-  el("weather").textContent = weather.region + " " + weather.temperature + "°C · 추천 " + weather.outfit;
-}).catch(() => {el("weather").textContent = "날씨 정보를 가져오지 못했습니다.";});
+  const wet = weather.precipitation > 0;
+  el("weather").textContent = weather.region + " " + weather.temperature + "°C · 현재 강수량 " + weather.precipitation + " mm";
+  showPalettes(weather.temperature, wet);
+}).catch(() => {
+  el("weather").textContent = "날씨를 불러오지 못했습니다. 기본 색 조합을 표시합니다.";
+  showPalettes(null, false);
+});
 </script>
 </html>
