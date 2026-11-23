@@ -168,7 +168,7 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 
 app.include_router(materials.router)
 app.include_router(assistant_api.make_router(connect))
-PAGES = {"/architecture": "구성도", "/schedule": "일정 관리", "/materials": "자료 정리"}
+PAGES = {"/architecture": "구성도", "/schedule": "일정 관리", "/materials": "자료 정리", "/shop": "쇼핑"}
 
 
 @app.exception_handler(StorageError)
@@ -421,7 +421,7 @@ def extract(message, history):
             logging.getLogger("uvicorn.error").warning("Codex CLI 응답을 확인할 수 없어 기본 엔진으로 전환합니다.")
     return fallback(message, base), "fallback"
 
-def render_page(request, filename, current):
+def render_page(request, filename, current, content=""):
     page = (ROOT / filename).read_text(encoding="utf-8")
     links = []
     for path, label in PAGES.items():
@@ -429,15 +429,18 @@ def render_page(request, filename, current):
         links.append(f'<a href="{path}"{active}>{label}</a>')
     if request.app.state.kakao:
         links.append('<form action="/auth/logout" method="post"><button type="submit">로그아웃</button></form>')
-    nav = '<nav class="workspace-nav" aria-label="페이지">' + "".join(links) + "</nav>"
+    brand = '<a class="workspace-brand" href="/schedule"><span aria-hidden="true">◈</span> 개인 AI 비서</a>'
+    nav = '<header class="workspace-top">' + brand + '<nav class="workspace-nav" aria-label="페이지">' + "".join(links) + "</nav></header>"
     widget = (ROOT / "assistant_widget.html").read_text(encoding="utf-8")
-    assets = '<link rel="stylesheet" href="/assistant-assets/assistant.css">'
+    assets = ('<link rel="stylesheet" href="/assistant-assets/assistant.css">'
+              '<link rel="stylesheet" href="/assistant-assets/workspace.css">')
     script = '<script defer src="/assistant-assets/assistant.js"></script>'
-    return HTMLResponse(page.replace("<!-- workspace-nav -->", assets + nav + widget + script))
+    return HTMLResponse(page.replace("<!-- workspace-nav -->", assets + nav + widget + script)
+                        .replace("<!-- shop-content -->", content))
 
 
 @app.get("/assistant-assets/{filename}")
-def assistant_asset(filename: Literal["assistant.css", "assistant.js"]):
+def assistant_asset(filename: Literal["assistant.css", "assistant.js", "workspace.css"]):
     return FileResponse(ROOT / filename)
 
 
@@ -455,6 +458,28 @@ def architecture(request: Request):
 @app.get("/materials")
 def materials_page(request: Request):
     return render_page(request, "materials.html", "/materials")
+
+
+@app.get("/shop")
+def shop(request: Request):
+    products = assistant_api.read_wishes(connect, request.state.owner)
+    cards = []
+    for product in products:
+        name, note = escape(product.name), escape(product.note)
+        price_url = escape(product.url, quote=True) if assistant_api.https_url(product.url) else "#saved"
+        review_url = escape(product.review_url, quote=True) if assistant_api.https_url(product.review_url) else "#saved"
+        cards.append(f"""<article class="wish-card">
+          <div class="wish-meta"><span>{escape(product.tier)}</span><span>★ {product.rating:g} · 리뷰 {product.reviews:,}개</span></div>
+          <h3>{name}</h3><strong class="wish-price">{product.price:,}원</strong><p>{note}</p>
+          <footer><a href="{price_url}" target="_blank" rel="noopener noreferrer">상품 보기 ↗</a>
+          <a href="{review_url}" target="_blank" rel="noopener noreferrer">상품평 ↗</a></footer>
+        </article>""")
+    if cards:
+        content = f'<p class="shop-count">저장된 상품 {len(cards)}개 · 검색 당시 가격</p><div class="wish-grid">{"".join(cards)}</div>'
+    else:
+        content = ('<div class="shop-empty"><span aria-hidden="true">♡</span><h3>아직 찜한 상품이 없어요</h3>'
+                   '<p>챗봇에서 상품을 비교하고 마음에 드는 상품을 문장으로 골라 보세요.</p></div>')
+    return render_page(request, "shop.html", "/shop", content)
 
 
 @app.post("/chat", include_in_schema=False)

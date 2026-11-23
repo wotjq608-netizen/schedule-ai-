@@ -62,6 +62,10 @@ class DashboardTests(unittest.TestCase):
             }
             self.assertEqual(client.post(base + "wishlist", auth=AUTH, json=product).status_code, 200)
             self.assertEqual(client.get(base + "wishlist", auth=AUTH).json(), {"products": [product]})
+            shop = client.get("/shop", auth=AUTH)
+            self.assertEqual(shop.status_code, 200)
+            self.assertIn(product["name"], shop.text)
+            self.assertIn(product["review_url"], shop.text)
             bad = {**product, "url": "javascript:alert(1)"}
             self.assertEqual(client.post(base + "wishlist", auth=AUTH, json=bad).status_code, 422)
 

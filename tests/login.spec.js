@@ -33,6 +33,13 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
     name: '저소음 키보드 테스트 모델', price: 49000, tier: '실속형', rating: 4.6, reviews: 25,
     note: '모의 상품평', url: 'https://example.com/product', review_url: 'https://example.com/reviews'
   };
+  await page.route('**/api/assistant/interpret', async route => {
+    const text = route.request().postDataJSON().text;
+    const intent = text === '부산에서 우산 챙길까?' ? {
+      action: 'weather', mode: 'information', city: '부산', day: 1, query: '', alarm_at: ''
+    } : null;
+    await route.fulfill({ json: { intent } });
+  });
   await page.route('**/api/assistant/compare', route => route.fulfill({ json: { products: [example] } }));
   await page.route('**/api/assistant/weather?*', route => route.fulfill({
     json: { region: '부산', temperature: 16, low: 12, high: 19, probability: 55, rain: 1 }
@@ -54,9 +61,13 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
   expect((await (await page.request.get('/api/assistant/alarms')).json()).alarms).toHaveLength(2);
   await send('저소음 키보드 찜해줘');
   await expect(log.getByRole('link', { name: '상품평 출처' })).toBeVisible();
-  await send('1번 찜해줘');
-  await expect(log.locator('[aria-label="찜 목록"]')).toContainText(example.name);
-  await send('부산 내일 날씨랑 옷차림');
+  await input.fill('1번 찜해줘');
+  await input.press('Enter');
+  await expect(page).toHaveURL(/\/shop#saved$/);
+  await expect(page.getByRole('heading', { name: '찜 목록' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: example.name })).toBeVisible();
+  await page.getByRole('button', { name: 'AI 챗봇' }).click();
+  await send('부산에서 우산 챙길까?');
   await expect(log).toContainText('최대 강수확률 55퍼센트');
   await expect(log).toContainText('3색 착장');
 

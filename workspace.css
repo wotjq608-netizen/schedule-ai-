@@ -1,0 +1,46 @@
+:root{--ink:#1c2540;--muted:#536079;--surface:#fff;--page:#f4f6fc;--line:#e0e5f1;--accent:#4338a7;--accent-strong:#322687;--tint:#eeebff;--shadow:0 12px 32px #1a244a0a}
+body{margin:0;background:radial-gradient(ellipse at 85% 0%,#ebefff 0,transparent 45%),var(--page);color:var(--ink);font-family:"Segoe UI","Malgun Gothic",system-ui,sans-serif}
+main{box-sizing:border-box;max-width:1180px;padding:24px clamp(16px,4vw,44px) 110px;margin:auto}
+main h1{letter-spacing:-.055em;font-size:clamp(34px,5vw,54px);line-height:1.12}
+main h2,main h3{letter-spacing:-.035em}
+.workspace-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 36px;padding:9px 12px 9px 16px;border:1px solid var(--line);background:#ffffffed;border-radius:16px;box-shadow:var(--shadow)}
+.workspace-brand{display:flex;align-items:center;gap:9px;white-space:nowrap;font-weight:750;font-size:14px;text-decoration:none;color:var(--ink)}
+.workspace-brand span{display:grid;place-items:center;width:33px;height:33px;border-radius:10px;background:var(--accent);color:white;font-size:16px}
+.workspace-top .workspace-nav{display:flex;align-items:center;gap:3px;margin:0;flex-wrap:wrap}
+.workspace-top .workspace-nav a,.workspace-top .workspace-nav button{display:block;padding:7px 11px;color:var(--muted);border:0;background:none;border-radius:9px;font-size:14px;font-weight:650;text-decoration:none}
+.workspace-top .workspace-nav a[aria-current=page]{color:var(--accent-strong);background:var(--tint)}
+.workspace-top .workspace-nav a:hover,.workspace-top .workspace-nav button:hover{color:var(--accent-strong);background:var(--tint)}
+.workspace-top .workspace-nav form{margin:0 0 0 5px;border-left:1px solid var(--line)}
+.workspace-top a:focus-visible,main .primary:focus-visible,.shop-main a:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+main .layout>section,main .panel,main .lane{border:1px solid var(--line);border-radius:20px;background:var(--surface);box-shadow:var(--shadow)}
+main button,main textarea,main select{border-color:#cdd5e9}
+main button:hover{background:#eef0fd}
+main .primary{border-color:var(--accent);background:var(--accent);color:#fff;font-weight:650}
+main .primary:hover{background:var(--accent-strong)}
+main .grid button[aria-pressed=true]{background:var(--tint);border-color:#b2a8ef;color:var(--accent-strong)}
+main .grid button[aria-current=date]{color:var(--accent);text-underline-offset:3px}
+main .user{background:var(--tint)}main .assistant{background:#f1f4fa}
+main .weather-card{position:relative;overflow:hidden;margin:22px 0;background:linear-gradient(116deg,#252a54,#38356f);color:#fff;border:none;box-shadow:0 12px 30px #302d6a29}
+main .weather-card .brief{color:#e3e1ff}
+main .weather-card .palette{background:#ffffff13;border:1px solid #ffffff2c;border-radius:14px;padding:13px}
+main .weather-card .chip{border-color:#ffffff60}
+main .node{background:#f1f2fc;color:var(--ink)}main .node small,main .pipe,main .joined,main .edge,main .footer a{color:var(--accent)}
+main .node p,main .muted,main .intro{color:var(--muted)}
+main .tunnel .node{background:#f2f4f8}
+.shop-hero{display:flex;align-items:center;justify-content:space-between;overflow:hidden;padding:clamp(24px,5vw,53px);border-radius:25px;color:white;background:linear-gradient(115deg,#242447,#403786 70%,#6554b4);box-shadow:0 18px 38px #322b6d24}
+.shop-hero h1{margin:0}.shop-hero p{margin:10px 0 0;color:#f1eeff}
+.shop-art{display:grid;place-items:center;flex:0 0 auto;width:clamp(58px,14vw,135px);height:clamp(58px,14vw,135px);margin-left:16px;border:1px solid #ffffff50;border-radius:35%;background:#ffffff13;color:#eae3ff;font:clamp(31px,9vw,84px)/1 system-ui;transform:rotate(-9deg)}
+.shop-saved{margin-top:30px;scroll-margin-top:20px}
+.shop-saved h2{margin:0 0 8px;font-size:25px}.shop-count{margin:0 0 15px;color:var(--muted)}
+.wish-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.wish-card,.shop-empty{box-sizing:border-box;border:1px solid var(--line);border-radius:18px;background:var(--surface);box-shadow:var(--shadow);padding:20px}
+.wish-card h3{margin:13px 0 7px;overflow-wrap:anywhere}
+.wish-meta{display:flex;align-items:center;justify-content:space-between;gap:5px;flex-wrap:wrap;color:var(--muted);font-size:12px}
+.wish-meta span:first-child{padding:4px 8px;border-radius:20px;background:var(--tint);color:var(--accent-strong);font-weight:700}
+.wish-price{font-size:21px;color:var(--accent-strong)}.wish-card p{margin:10px 0;color:var(--muted);overflow-wrap:anywhere}
+.wish-card footer{display:flex;gap:13px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.wish-card a{color:var(--accent-strong);font-weight:650;text-underline-offset:3px}
+.shop-empty{text-align:center;padding:44px 18px;color:var(--muted)}.shop-empty span{display:inline-grid;place-items:center;width:58px;height:58px;border-radius:18px;background:var(--tint);color:var(--accent);font-size:34px}
+.shop-empty h3{color:var(--ink);margin:13px 0 5px}.shop-empty p{margin:0}
+@media(max-width:810px){.wish-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.workspace-top{align-items:flex-start;flex-direction:column;margin-bottom:24px}.workspace-top .workspace-nav a,.workspace-top .workspace-nav button{padding:6px 8px;font-size:13px}.wish-grid{grid-template-columns:1fr}}

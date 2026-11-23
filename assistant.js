@@ -69,10 +69,13 @@
     log.scrollTop = log.scrollHeight;
   }
 
-  async function wishlist() {
-    const {products} = await api("wishlist");
-    bubble(products.length ? "찜 목록" : "찜한 상품이 없습니다.");
-    showProducts(products, "찜 목록");
+  function wishlist() {
+    if (location.pathname === "/shop") {
+      location.hash = "saved";
+      location.reload();
+      return;
+    }
+    location.assign("/shop#saved");
   }
 
   async function compare(query) {
@@ -169,19 +172,19 @@
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshAlarms(); });
   refreshAlarms();
 
-  async function weather(text) {
+  async function weather(text, intent) {
     const named = cities.find(city => text.includes(city));
     const match = text.match(/([가-힣]{2,14})(?:시|군|구)(?:의|에서|에|\s)/);
     const prefix = text.match(/([가-힣]{2,14})(?:의)?\s+(?:(?:오늘|내일|모레)\s+)?(?:날씨|온도|기온|옷차림|착장)/);
     const reserved = /^(오늘|내일|모레|지금|현재|이번|주말|지역|알려줘|추천|비교|최신)$/;
     const remembered = sessionStorage.getItem("assistant-weather-city") || "";
     const alternative = prefix?.[1].replace(/의$/, "");
-    const city = named || match?.[1] || (alternative && !reserved.test(alternative) ? alternative : "") || remembered;
-    const day = /모레/.test(text) ? 2 : /내일/.test(text) ? 1 : 0;
+    const city = named || intent?.city || match?.[1] || (alternative && !reserved.test(alternative) ? alternative : "") || remembered;
+    const day = /모레/.test(text) ? 2 : /내일/.test(text) ? 1 : intent?.day || 0;
     const params = new URLSearchParams({city, day:String(day)});
     const data = await api("weather?" + params);
     if (city) sessionStorage.setItem("assistant-weather-city", city);
-    const when = ["오늘","내일","모레"][day];
+    const when = ["오늘","내일","모레"][day] || data.date;
     const rain = data.rain > 0 || data.probability >= 45;
     const temperature = day ? (data.low + data.high) / 2 : data.temperature;
     const outfit = temperature < 10 ? ["아이보리","네이비","버건디","도톰한 겉옷"]
@@ -246,11 +249,18 @@
       }
       if (choice) { bubble("비교 카드에 표시된 번호를 골라 주세요."); return; }
     }
-    if (/날씨|기온|온도|강수|비\s*(?:와|오|예보|올)|옷차림|착장|뭐\s*입/.test(text) && !/상품|쇼핑|키보드/.test(text)) {
-      return weather(text);
+    const intent = (await api("interpret", {text}).catch(() => ({}))).intent;
+    if (intent?.action === "cancel") {
+      pending = null;
+      bubble("요청을 실행하지 않았어요.", false, voice);
+      return;
     }
-    if (/알람|알림/.test(text) || pending?.kind === "alarm-time") {
-      if (/목록|맞춰\s*(?:놨|졌)|설정돼|몇\s*시에\s*맞/.test(text)) {
+    if (intent?.action === "wishlist") return wishlist();
+    if (intent?.action === "weather" || (/날씨|기온|온도|강수|비\s*(?:와|오|예보|올)|옷차림|착장|뭐\s*입/.test(text) && !/상품|쇼핑|키보드/.test(text))) {
+      return weather(text, intent);
+    }
+    if (/알람|알림/.test(text) || pending?.kind === "alarm-time" || ["alarm","alarm_list"].includes(intent?.action)) {
+      if (intent?.action === "alarm_list" || /목록|맞춰\s*(?:놨|졌)|설정돼|몇\s*시에\s*맞/.test(text)) {
         const {alarms} = await api("alarms");
         bubble(alarms.length ? alarms.map(a=>alarmFormat.format(new Date(a.due))).join("\n") : "예정된 알람이 없어요.", false, voice);
         return;
@@ -260,13 +270,16 @@
         bubble("알람을 추가하지 않았어요. 저장된 알람 삭제는 아직 지원하지 않아요.", false, voice);
         return;
       }
-      const time = alarmTime(text);
+      const literalTime = alarmTime(text);
+      const proposed = intent?.action === "alarm" ? intent.alarm_at : "";
+      const inferred = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::00)?\+09:00$/.test(proposed) && Date.parse(proposed) > Date.now();
+      const time = literalTime || (inferred ? proposed : "");
       if (!time) {
         pending = {kind:"alarm-time"};
         bubble("알람 설정을 할 수 있어요. ‘내일 오전 7시’처럼 앞으로의 날짜와 시간을 확인해 주세요.", false, voice);
         return;
       }
-      if (question.test(text) || (!directive.test(text) && pending?.kind !== "alarm-time")) {
+      if (!literalTime || question.test(text) || intent?.mode === "confirmation" || (!directive.test(text) && pending?.kind !== "alarm-time")) {
         pending = {kind:"alarm", time};
         bubble(alarmFormat.format(new Date(time)) + "에 설정할 수 있어요. 알람을 설정할까요? ‘네’라고 답해 주세요.", false, voice);
         return;
@@ -274,14 +287,14 @@
       pending = null;
       return createAlarm(time, voice);
     }
-    if (/찜|상품\s*비교|가격\s*비교|구매\s*추천/.test(text) && !/하지\s*마|하지\s*말/.test(text)) {
-      const query = text.replace(/(?:을|를)?\s*(?:찜|상품\s*비교|가격\s*비교|구매\s*추천).*$/, "").trim()
+    if (intent?.action === "compare" || (/찜|상품\s*비교|가격\s*비교|구매\s*추천/.test(text) && !/하지\s*마|하지\s*말/.test(text))) {
+      const query = (intent?.action === "compare" && intent.query) || text.replace(/(?:을|를)?\s*(?:찜|상품\s*비교|가격\s*비교|구매\s*추천).*$/, "").trim()
         || text.replace(/^(?:찜할|상품\s*비교|가격\s*비교)\s*/, "").trim();
       if (!query || query === text && /^찜/.test(text)) {
         bubble("어떤 상품을 찾을까요? ‘저소음 키보드 찜해줘’처럼 입력해 주세요.", false, voice);
         return;
       }
-      if (question.test(text) && /찜|가능|수\s*있/.test(text)) {
+      if (intent?.mode === "confirmation" || (question.test(text) && /찜|가능|수\s*있/.test(text))) {
         pending = {kind:"compare", query};
         bubble("가격과 상품평을 비교할 수 있어요. " + query + " 상품을 찾아 볼까요? ‘네’라고 답해 주세요.", false, voice);
         return;
