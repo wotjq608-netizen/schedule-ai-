@@ -156,6 +156,47 @@
     return;
   }
 
+  const gpsHistoryStatus = get("gps-history-status");
+  const gpsHistoryList = get("gps-history-list");
+  const gpsHistoryMore = get("gps-history-more");
+  const koreanTime = new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit",
+  });
+  const formatTime = stamp => koreanTime.format(new Date(stamp));
+  let gpsNext = null;
+  async function loadGpsHistory() {
+    gpsHistoryMore.disabled = true;
+    try {
+      const result = await api("reports/gps-history" + (gpsNext ? "?before=" + gpsNext : ""));
+      for (const entry of result.history) {
+        const item = document.createElement("li");
+        const time = entry.requested_at ? formatTime(entry.requested_at) : "시각 미기록";
+        const used = entry.used ? "보고서 생성에 사용" : "위치 확인 요청";
+        item.textContent = `${entry.day} ${time} · 1회 차감 · ${used}`;
+        gpsHistoryList.append(item);
+      }
+      gpsNext = result.next;
+      gpsHistoryMore.hidden = !gpsNext;
+      gpsHistoryStatus.textContent = gpsHistoryList.children.length ? "" : "GPS 사용 이력이 없습니다.";
+    } catch (error) {
+      gpsHistoryStatus.textContent = error.message;
+    } finally {
+      gpsHistoryMore.disabled = false;
+    }
+  }
+  if (guest) {
+    gpsHistoryStatus.textContent = "로그인하면 내 GPS 사용 이력을 확인할 수 있습니다.";
+  } else {
+    gpsHistoryMore.addEventListener("click", loadGpsHistory);
+    loadGpsHistory();
+    api("reports/gps-quota").then(({remaining, limit}) => {
+      get("gps-history-quota").textContent =
+        `오늘 ${limit - remaining}회 사용 · ${remaining}/${limit}회 남음 · 한국 시간 기준`;
+    }).catch(() => {
+      get("gps-history-quota").textContent = "오늘 남은 횟수를 확인하지 못했습니다.";
+    });
+  }
+
   const list = get("report-list");
   const more = get("report-more");
   let next = null;
@@ -168,9 +209,7 @@
         const item = document.createElement("li");
         const button = document.createElement("button");
         button.type = "button";
-        const time = new Intl.DateTimeFormat("ko-KR", {
-          timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit",
-        }).format(new Date(report.created_at));
+        const time = formatTime(report.created_at);
         const percent = report.percent == null ? "일정 없음" : `달성률 ${report.percent}%`;
         button.textContent = `${report.day} ${time} · ${percent} · ${engineName(report.engine)}`;
         button.addEventListener("click", async () => {

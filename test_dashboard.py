@@ -52,6 +52,7 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(client.post("/api/reports", headers=origin, json={}).status_code, 403)
             self.assertEqual(client.get("/api/reports").json()["reports"], [])
             self.assertEqual(client.post("/api/reports/gps-quota", headers=origin).status_code, 403)
+            self.assertEqual(client.get("/api/reports/gps-history").json(), {"history": [], "next": None})
             with main.connect() as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM login_history").fetchone()[0], 0)
                 self.assertEqual(db.execute("SELECT count(*) FROM tasks").fetchone()[0], 0)
@@ -108,6 +109,19 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual(client.post("/api/reports", auth=AUTH, json={
                     "visits": payload["visits"], "origin": "서울특별시 중구 세종대로 110",
                 }).status_code, 201)
+            history = client.get("/api/reports/gps-history", auth=AUTH).json()
+            self.assertEqual(len(history["history"]), 3)
+            self.assertEqual(sum(entry["used"] for entry in history["history"]), 1)
+            for entry in history["history"]:
+                self.assertEqual(set(entry), {"day", "requested_at", "used"})
+                self.assertTrue(entry["requested_at"].endswith("+09:00"))
+            with main.connect() as db:
+                db.executemany("INSERT INTO report_gps_usage(owner, day, token) VALUES (?,?,?)", [
+                    ("legacy", "2020-01-01", "legacy-token"), ("another-owner", "2020-01-01", "private"),
+                ])
+            history = client.get("/api/reports/gps-history", auth=AUTH).json()["history"]
+            self.assertEqual(len(history), 4)
+            self.assertEqual(history[0], {"day": "2020-01-01", "requested_at": None, "used": False})
             next_day = datetime.now(main.KST) + timedelta(days=1)
             with patch.object(daily_reports, "datetime") as clock:
                 clock.now.return_value = next_day

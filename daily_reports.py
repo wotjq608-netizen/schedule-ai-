@@ -53,8 +53,10 @@ def prepare(db):
     db.execute("CREATE INDEX IF NOT EXISTS reports_owner_id ON daily_reports(owner, id)")
     db.execute("""CREATE TABLE IF NOT EXISTS report_gps_usage (
         owner TEXT NOT NULL, day TEXT NOT NULL, token TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY(owner, day, token)
+        requested_at TEXT, PRIMARY KEY(owner, day, token)
     )""")
+    if "requested_at" not in {row[1] for row in db.execute("PRAGMA table_info(report_gps_usage)")}:
+        db.execute("ALTER TABLE report_gps_usage ADD COLUMN requested_at TEXT")
 
 
 def progress(db, owner, day):
@@ -242,19 +244,37 @@ def make_router(connect):
 
     @router.post("/gps-quota")
     def reserve_gps(request: Request):
-        day = datetime.now(KST).date().isoformat()
+        now = datetime.now(KST)
+        day = now.date().isoformat()
         owner, token = request.state.owner, secrets.token_urlsafe(24)
         with connect() as db:
             saved = db.execute(
-                """INSERT INTO report_gps_usage(owner, day, token)
-                   SELECT ?, ?, ? WHERE (SELECT count(*) FROM report_gps_usage
+                """INSERT INTO report_gps_usage(owner, day, token, requested_at)
+                   SELECT ?, ?, ?, ? WHERE (SELECT count(*) FROM report_gps_usage
                    WHERE owner = ? AND day = ?) < ?""",
-                (owner, day, token, owner, day, GPS_DAILY_LIMIT))
+                (owner, day, token, now.isoformat(timespec="seconds"), owner, day, GPS_DAILY_LIMIT))
             if not saved.rowcount:
                 raise HTTPException(429, "오늘 GPS 3회를 모두 사용했습니다. 출발지 주소를 입력해 주세요.")
             count = db.execute("SELECT count(*) FROM report_gps_usage WHERE owner = ? AND day = ?",
                                (owner, day)).fetchone()[0]
         return {"token": token, "remaining": GPS_DAILY_LIMIT - count, "limit": GPS_DAILY_LIMIT}
+
+    @router.get("/gps-history")
+    def gps_history(request: Request, before: int | None = None):
+        if getattr(request.state, "guest", False):
+            return {"history": [], "next": None}
+        bound = before if before is not None and 0 < before < 2**63 else 2**63 - 1
+        with connect() as db:
+            rows = db.execute(
+                "SELECT rowid, day, requested_at, used FROM report_gps_usage "
+                "WHERE owner = ? AND rowid < ? ORDER BY rowid DESC LIMIT 21",
+                (request.state.owner, bound)
+            ).fetchall()
+        return {
+            "history": [{"day": row["day"], "requested_at": row["requested_at"],
+                         "used": bool(row["used"])} for row in rows[:20]],
+            "next": rows[19]["rowid"] if len(rows) > 20 else None,
+        }
 
     @router.get("/{ident}")
     def report(request: Request, ident: int, download: bool = False):
