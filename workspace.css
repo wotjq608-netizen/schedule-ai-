@@ -70,3 +70,5 @@ main .tunnel .node{background:#f2f4f8}
 .recommendation-source{font-size:13px;color:var(--muted);margin-bottom:6px}
 
 .shop-external-sources a{color:var(--accent-strong);font-weight:650;text-underline-offset:3px}
+
+.guest-banner{margin:-20px 0 18px;padding:8px 12px;border-radius:9px;background:var(--tint);color:var(--accent-strong)}

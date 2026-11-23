@@ -20,10 +20,12 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic
+from itsdangerous import BadData, URLSafeTimedSerializer
 from pydantic import BaseModel, Field
 
 import assistant_api
 import codex_reply
+import google_login
 import kakao_login
 import materials
 from drive_storage import DriveStorage, StorageError
@@ -34,6 +36,11 @@ DB = ROOT / "agent_server.db"
 KST = ZoneInfo("Asia/Seoul")
 AUTH = HTTPBasic(realm="Personal Dashboard")
 ADMIN_AUTH = HTTPBasic(realm="Dashboard Admin")
+GUEST_SECONDS = 2 * 60 * 60
+GUEST_READS = {"/api/tasks", "/api/assistant/alarms", "/api/assistant/wishlist"}
+GUEST_POSTS = {"/auth/logout", "/chat", "/api/chat", "/api/assistant/interpret",
+               "/api/assistant/ask", "/api/assistant/compare", "/api/materials/summarize"}
+
 Category = Literal["업무", "학습", "건강", "약속", "생활", "기타"]
 PROVIDERS = [(name, key) for name, key in (
     ("gemini", os.getenv("GEMINI_API_KEY")), ("openai", os.getenv("OPENAI_API_KEY"))
@@ -101,9 +108,13 @@ def prepare_db(db, legacy_owner=None):
         db.execute("ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'legacy'")
     db.execute("CREATE INDEX IF NOT EXISTS tasks_owner_day ON tasks(owner, day, id)")
     db.execute("""CREATE TABLE IF NOT EXISTS login_history (
-        id INTEGER PRIMARY KEY, account TEXT NOT NULL, logged_in_at TEXT NOT NULL, ip TEXT
+        id INTEGER PRIMARY KEY, account TEXT NOT NULL, logged_in_at TEXT NOT NULL, ip TEXT,
+        provider TEXT NOT NULL DEFAULT 'kakao'
     )""")
-    if "ip" not in {row[1] for row in db.execute("PRAGMA table_info(login_history)")}:
+    audit_columns = {row[1] for row in db.execute("PRAGMA table_info(login_history)")}
+    if "provider" not in audit_columns:
+        db.execute("ALTER TABLE login_history ADD COLUMN provider TEXT NOT NULL DEFAULT 'kakao'")
+    if "ip" not in audit_columns:
         db.execute("ALTER TABLE login_history ADD COLUMN ip TEXT")
     if legacy_owner:
         db.execute("UPDATE tasks SET owner = ? WHERE owner = 'legacy'", (legacy_owner,))
@@ -141,13 +152,16 @@ def connect():
 async def lifespan(app):
     global DRIVE
     app.state.kakao = kakao_login.Kakao.from_env()
+    app.state.google = google_login.Google.from_env()
+    secret = os.getenv("SESSION_SECRET", "").strip()
+    app.state.signing_secret = secret if len(secret) >= 32 else secrets.token_urlsafe(48)
     legacy_id = os.getenv("KAKAO_LEGACY_OWNER_ID", "").strip()
     legacy_owner = None
     if legacy_id and app.state.kakao:
         if not re.fullmatch(r"[1-9][0-9]{0,19}", legacy_id):
             raise RuntimeError("기존 일정에 지정할 카카오 사용자 ID를 확인하세요.")
         legacy_owner = account_owner(app.state.kakao, legacy_id)
-    if not ALLOWED or (not app.state.kakao and not (os.getenv("ADMIN_USER") and os.getenv("ADMIN_PASS"))):
+    if not ALLOWED or (not (app.state.kakao or app.state.google) and not (os.getenv("ADMIN_USER") and os.getenv("ADMIN_PASS"))):
         raise RuntimeError("관리자 인증과 접속 허용 목록을 설정해야 합니다.")
     mode = os.getenv("TASK_STORAGE", "sqlite")
     if mode == "google-drive":
@@ -207,26 +221,37 @@ async def access_control(request: Request, call_next):
         response = await call_next(request)
         response.headers.update(headers)
         return response
-    config = request.app.state.kakao
-    if request.method == "GET" and request.url.path in {"/login", "/auth/kakao", kakao_login.CALLBACK}:
+    path, method = request.url.path, request.method
+    public = {"/login", "/auth/kakao", kakao_login.CALLBACK, "/auth/google", google_login.CALLBACK}
+    if (method == "GET" and path in public) or (method == "POST" and path == "/auth/guest"):
         response = await call_next(request)
         response.headers.update(headers)
-        return response
-    if config:
-        owner = config.verify(request.cookies.get(kakao_login.SESSION_COOKIE), "session", kakao_login.SESSION_SECONDS)
-        if not owner:
-            if request.method == "GET" and request.url.path in {"/", *PAGES}:
-                return RedirectResponse("/login", status_code=303, headers=headers)
-            return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401, headers=headers)
-        if request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("origin") != config.origin:
-            return JSONResponse({"detail": "요청의 출처를 확인할 수 없습니다."}, status_code=403, headers=headers)
-        request.state.owner = owner
-        response = await call_next(request)
-        response.headers.update(headers)
-        if request.method == "GET" and request.url.path in {"/", *PAGES}:
-            # The dashboard logout form needs a same-origin Origin header.
+        if path == "/login":
             response.headers["Referrer-Policy"] = "same-origin"
         return response
+    owner = read_session(request)
+    if owner:
+        if method not in {"GET", "HEAD", "OPTIONS"} and not same_origin(request):
+            return JSONResponse({"detail": "요청의 출처를 확인할 수 없습니다."}, status_code=403, headers=headers)
+        request.state.owner = owner
+        request.state.guest = owner.startswith("guest:")
+        if request.state.guest:
+            if method in {"GET", "HEAD"} and path in GUEST_READS:
+                payload = {"today": today().isoformat(), "tasks": []} if path == "/api/tasks" else {
+                    "alarms" if path.endswith("/alarms") else "products": []}
+                return JSONResponse(payload, headers=headers)
+            if method not in {"GET", "HEAD", "OPTIONS"} and path not in GUEST_POSTS:
+                return JSONResponse({"detail": "게스트 모드에서는 기록을 저장하지 않습니다. 카카오 또는 구글로 로그인해 주세요."},
+                                    status_code=403, headers=headers)
+        response = await call_next(request)
+        response.headers.update(headers)
+        if method == "GET" and path in {"/", *PAGES}:
+            response.headers["Referrer-Policy"] = "same-origin"
+        return response
+    if request.app.state.kakao or request.app.state.google:
+        if method == "GET" and path in {"/", *PAGES}:
+            return RedirectResponse("/login", status_code=303, headers=headers)
+        return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401, headers=headers)
     if not await authorized_admin(request, AUTH):
         if request.method == "GET" and request.url.path == "/" and "text/html" in request.headers.get("accept", ""):
             return RedirectResponse("/login", status_code=303, headers=headers)
@@ -237,28 +262,62 @@ async def access_control(request: Request, call_next):
     response.headers.update(headers)
     return response
 
-def login_ip(request):
-    """Record network metadata independently of the access-control allowlist."""
-    if not request.client:
+def serializer(request, purpose):
+    return URLSafeTimedSerializer(request.app.state.signing_secret, salt=purpose)
+
+
+def read_session(request):
+    value = request.cookies.get(kakao_login.SESSION_COOKIE)
+    if not value:
         return None
     try:
-        peer = ipaddress.ip_address(request.client.host)
+        owner = serializer(request, "session").loads(value, max_age=kakao_login.SESSION_SECONDS)
+        if not isinstance(owner, str):
+            return None
+        if owner.startswith("guest:"):
+            return serializer(request, "session").loads(value, max_age=GUEST_SECONDS)
+        return owner if owner.startswith(("kakao:", "google:")) else None
+    except BadData:
+        return None
+
+
+def same_origin(request):
+    origin = request.headers.get("origin")
+    origins = {config.origin for config in (request.app.state.kakao, request.app.state.google) if config}
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if render_url:
+        origins.add(render_url)
+    if not origins:
+        origins.add(str(request.base_url).rstrip("/"))
+    return origin in origins
+
+
+def public_ip(value):
+    try:
+        address = ipaddress.ip_address(value.strip())
+        return address if address.is_global else None
     except ValueError:
         return None
-    if os.getenv("RENDER") == "true":
-        if not peer.is_private or not request.headers.get("cf-ray"):
-            return None
-        # Only use Cloudflare's value when it agrees with the ingress forwarding chain.
-        try:
-            visitor = ipaddress.ip_address(request.headers.get("cf-connecting-ip", "").strip())
-            forwarding = request.headers.get("x-forwarded-for", "").split(",")
-            addresses = [ipaddress.ip_address(value.strip()) for value in forwarding[-2:]]
-            if visitor.is_global and visitor in addresses:
-                return str(visitor)
-        except ValueError:
-            pass
+
+
+def login_ip(request):
+    """On Render use ingress metadata only, never for access-control decisions."""
+    if not request.client:
         return None
-    return str(peer)
+    if os.getenv("RENDER") == "true":
+        if not request.headers.get("cf-ray"):
+            return None
+        chain = [public_ip(value) for header in request.headers.getlist("x-forwarded-for")
+                 for value in header.split(",")]
+        edge = public_ip(request.headers.get("cf-connecting-ip", ""))
+        if edge and edge in chain:
+            return str(edge)
+        # Render appends the verified visitor address. Never use a caller-supplied prefix.
+        return str(chain[-1]) if chain and chain[-1] else None
+    try:
+        return str(ipaddress.ip_address(request.client.host))
+    except ValueError:
+        return None
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -272,7 +331,7 @@ def login_history(request: Request, before: int | None = Query(default=None, ge=
         args.extend([search, search])
     clause = " WHERE " + " AND ".join(where) if where else ""
     with connect() as db:
-        rows = db.execute("SELECT id, account, logged_in_at, ip FROM login_history" + clause +
+        rows = db.execute("SELECT id, account, logged_in_at, ip, provider FROM login_history" + clause +
                           " ORDER BY id DESC LIMIT 51", args).fetchall()
         stats = db.execute("""SELECT count(*) AS total, count(DISTINCT account) AS accounts,
             count(CASE WHEN logged_in_at >= ? THEN 1 END) AS recent FROM login_history""",
@@ -283,9 +342,10 @@ def login_history(request: Request, before: int | None = Query(default=None, ge=
             (datetime.now(KST).isoformat(timespec="minutes"),)).fetchone()
     table = "".join(
         f"<tr><td><code>{escape(row['account'])}</code></td><td>{escape(row['logged_in_at'])}</td>"
-        f"<td><code>{escape(row['ip']) if row['ip'] else '—'}</code></td></tr>"
+        f"<td><code>{escape(row['ip']) if row['ip'] else '—'}</code></td>"
+        f"<td>{'구글' if row['provider'] == 'google' else '카카오'}</td></tr>"
         for row in rows[:50]
-    ) or '<tr><td colspan="3">표시할 로그인 기록이 없습니다.</td></tr>'
+    ) or '<tr><td colspan="4">표시할 로그인 기록이 없습니다.</td></tr>'
     links = ['<a href="/admin?' + escape(urlencode({"q": search}), quote=True) + '">최신 기록</a>'] if before else []
     if len(rows) == 51:
         more = urlencode({"before": rows[49]["id"], "q": search})
@@ -304,18 +364,25 @@ def login_history(request: Request, before: int | None = Query(default=None, ge=
 
 @app.get("/login", response_class=HTMLResponse)
 def login(request: Request, error: str = ""):
-    config = request.app.state.kakao
     notice = {
-        "cancelled": "카카오 로그인이 취소됐습니다.",
+        "cancelled": "로그인이 취소됐습니다.",
         "failed": "로그인을 완료하지 못했습니다. 다시 시도해 주세요.",
+        "google-unavailable": "구글 로그인은 관리자 설정이 필요합니다.",
+        "guest-origin": "게스트 접속을 확인하지 못했습니다. 로그인 화면을 새로고침한 뒤 다시 시도해 주세요.",
     }.get(error, "")
-    if config:
-        action = '<a class="action" href="/auth/kakao">카카오로 로그인</a>'
+    actions = []
+    if request.app.state.kakao:
+        actions.append('<a class="action" href="/auth/kakao">카카오로 로그인</a>')
+    if request.app.state.google:
+        actions.append('<a class="action google" href="/auth/google">Google로 로그인</a>')
     else:
-        notice = "로컬 모드에서는 관리자 계정으로 로그인합니다."
-        action = '<a class="action" href="/architecture">관리자로 로그인</a>'
+        actions.append('<button class="action google" type="button" disabled>Google로 로그인 · 설정 대기</button>')
+    if not (request.app.state.kakao or request.app.state.google):
+        actions.append('<a class="action google" href="/architecture">로컬 관리자 로그인</a>')
+    actions.append('<form method="post" action="/auth/guest"><button class="action guest" type="submit">게스트로 입장</button></form>')
     page = (ROOT / "login.html").read_text(encoding="utf-8")
-    return page.replace("<!-- login-notice -->", notice).replace("<!-- login-action -->", action)
+    return page.replace("<!-- login-notice -->", notice).replace("<!-- login-action -->", "".join(actions))
+
 
 def set_login_cookie(response, name, value, seconds):
     response.set_cookie(name, value, max_age=seconds, path="/", secure=True, httponly=True, samesite="lax")
@@ -350,19 +417,74 @@ def finish_kakao(request: Request, state: str = "", code: str = "", error: str =
         logging.getLogger("uvicorn.error").warning("카카오 로그인 토큰 교환 또는 사용자 확인 실패")
         return response
     owner = account_owner(config, ident)
-    account = hmac.digest(config.signing_secret.encode(), owner.encode(), "sha256").hex()[:24]
+    return complete_login(request, owner, "kakao", response)
+
+
+def complete_login(request, owner, provider, response):
+    account = hmac.digest(request.app.state.signing_secret.encode(), owner.encode(), "sha256").hex()[:24]
+    ip = login_ip(request)
     with connect() as db:
-        db.execute("INSERT INTO login_history(account, logged_in_at, ip) VALUES (?, ?, ?)",
-                   (account, datetime.now(KST).isoformat(timespec="seconds"), login_ip(request)))
+        db.execute("INSERT INTO login_history(account, logged_in_at, ip, provider) VALUES (?, ?, ?, ?)",
+                   (account, datetime.now(KST).isoformat(timespec="seconds"), ip, provider))
+    if os.getenv("RENDER") == "true":
+        logging.getLogger("uvicorn.error").info(
+            "Login audit: provider=%s ip_recorded=%s edge=%s forwarded=%s",
+            provider, ip is not None, bool(request.headers.get("cf-ray")),
+            bool(request.headers.get("x-forwarded-for")))
     response.headers["location"] = "/architecture"
-    set_login_cookie(response, kakao_login.SESSION_COOKIE, config.sign(owner, "session"),
-                     kakao_login.SESSION_SECONDS)
+    set_login_cookie(response, kakao_login.SESSION_COOKIE,
+                     serializer(request, "session").dumps(owner), kakao_login.SESSION_SECONDS)
     return response
+
+
+@app.get("/auth/google")
+def start_google(request: Request):
+    config = request.app.state.google
+    if not config:
+        return RedirectResponse("/login?error=google-unavailable", status_code=303)
+    state, nonce, proof = (secrets.token_urlsafe(32) for _ in range(3))
+    response = RedirectResponse(config.authorize(state, nonce, proof), status_code=303)
+    value = serializer(request, "google-oauth-state").dumps([state, nonce, proof])
+    set_login_cookie(response, google_login.STATE_COOKIE, value, kakao_login.STATE_SECONDS)
+    return response
+
+
+@app.get(google_login.CALLBACK)
+def finish_google(request: Request, state: str = "", code: str = "", error: str = ""):
+    response = RedirectResponse("/login?error=failed", status_code=303)
+    clear_login_cookie(response, google_login.STATE_COOKIE)
+    config = request.app.state.google
+    value = request.cookies.get(google_login.STATE_COOKIE)
+    if not config or not value:
+        return response
+    try:
+        expected, nonce, proof = serializer(request, "google-oauth-state").loads(value, max_age=kakao_login.STATE_SECONDS)
+        if not secrets.compare_digest(state.encode(), expected.encode()):
+            return response
+        if error or not code:
+            response.headers["location"] = "/login?error=cancelled"
+            return response
+        subject = google_login.exchange(config, code, nonce, proof)
+    except (BadData, httpx.HTTPError, ValueError, KeyError, TypeError):
+        logging.getLogger("uvicorn.error").warning("Google 로그인 인증 정보를 확인할 수 없습니다.")
+        return response
+    return complete_login(request, f"google:{subject}", "google", response)
+
+
+@app.post("/auth/guest")
+def start_guest(request: Request):
+    if not same_origin(request):
+        return RedirectResponse("/login?error=guest-origin", status_code=303)
+    response = RedirectResponse("/architecture", status_code=303)
+    set_login_cookie(response, kakao_login.SESSION_COOKIE,
+                     serializer(request, "session").dumps("guest:" + secrets.token_urlsafe(18)), GUEST_SECONDS)
+    clear_login_cookie(response, kakao_login.STATE_COOKIE)
+    clear_login_cookie(response, google_login.STATE_COOKIE)
+    return response
+
 
 @app.post("/auth/logout")
 def logout(request: Request):
-    if not request.app.state.kakao:
-        raise HTTPException(404)
     response = RedirectResponse("/login", status_code=303)
     clear_login_cookie(response, kakao_login.SESSION_COOKIE)
     clear_login_cookie(response, kakao_login.STATE_COOKIE)
@@ -476,12 +598,16 @@ def render_page(request, filename, current, content=""):
     for path, label in PAGES.items():
         active = ' aria-current="page"' if path == current else ""
         links.append(f'<a href="{path}"{active}>{label}</a>')
-    if request.app.state.kakao:
+    if read_session(request):
         links.append('<form action="/auth/logout" method="post"><button type="submit">로그아웃</button></form>')
     brand = '<a class="workspace-brand" href="/schedule"><span aria-hidden="true">◈</span> 개인 AI 비서</a>'
     nav = '<header class="workspace-top">' + brand + '<nav class="workspace-nav" aria-label="페이지">' + "".join(links) + "</nav></header>"
     scope = hashlib.sha256(request.state.owner.encode()).hexdigest()[:24]
-    widget = (ROOT / "assistant_widget.html").read_text(encoding="utf-8").replace("<!-- account-scope -->", scope)
+    guest = getattr(request.state, "guest", False)
+    widget = (ROOT / "assistant_widget.html").read_text(encoding="utf-8").replace(
+        "<!-- account-scope -->", scope).replace("<!-- guest-mode -->", "true" if guest else "false")
+    if guest:
+        nav += '<p class="guest-banner">게스트 모드 · 입력 기록과 일정·찜·알람은 저장되지 않습니다.</p>'
     assets = ('<link rel="stylesheet" href="/assistant-assets/assistant.css">'
               '<link rel="stylesheet" href="/assistant-assets/workspace.css">')
     script = '<script defer src="/assistant-assets/assistant.js"></script>'
@@ -513,7 +639,7 @@ def materials_page(request: Request):
 
 @app.get("/shop")
 def shop(request: Request):
-    products = assistant_api.read_wishes(connect, request.state.owner)
+    products = [] if getattr(request.state, "guest", False) else assistant_api.read_wishes(connect, request.state.owner)
     cards = []
     for product in products:
         name, note = escape(product.name), escape(product.note)
@@ -539,6 +665,11 @@ def chat(request: Request, payload: Message):
     message = payload.message.strip()
     if not message:
         raise HTTPException(422, "메시지를 입력하세요.")
+    if getattr(request.state, "guest", False):
+        result = fallback(message, today())
+        preview = "\n".join(f"• {task.day} {task.time} {task.title}".replace("  ", " ") for task in result.tasks)
+        reply = "게스트 모드에서는 입력한 일정이 저장되지 않습니다."
+        return {"tasks": [], "reply": reply + ("\n미리보기\n" + preview if preview else ""), "engine": "guest"}
     result, engine = extract(message, payload.history)
     if result.tasks:
         with connect() as db:

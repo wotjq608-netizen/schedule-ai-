@@ -38,6 +38,40 @@ class DashboardTests(unittest.TestCase):
             "KAKAO_LEGACY_OWNER_ID": "",
         }))
 
+    def test_guest_does_not_save(self):
+        base = "https://example.com"
+        origin = {"Origin": base}
+        with TestClient(main.app, base_url=base, client=("127.0.0.1", 10001)) as client:
+            self.assertEqual(client.post("/auth/guest", headers=origin).status_code, 200)
+            result = client.post("/api/chat", headers=origin, json={"message": EXAMPLE})
+            self.assertEqual(result.json()["tasks"], [])
+            self.assertEqual(client.post("/api/assistant/wishlist", headers=origin, json={}).status_code, 403)
+            self.assertEqual(client.get("/api/tasks").json()["tasks"], [])
+            with main.connect() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM login_history").fetchone()[0], 0)
+                self.assertEqual(db.execute("SELECT count(*) FROM tasks").fetchone()[0], 0)
+
+    def test_google_login_records_provider(self):
+        from urllib.parse import parse_qs, urlsplit
+        import google_login
+
+        base = "https://example.com"
+        config = google_login.Google("fake-client", "test-value", base + google_login.CALLBACK, base)
+        with patch.object(google_login.Google, "from_env", return_value=config):
+            with patch.object(google_login, "exchange", return_value="fake-subject") as exchange:
+                with TestClient(main.app, base_url=base, client=("127.0.0.1", 10001)) as client:
+                    start = client.get("/auth/google", follow_redirects=False)
+                    target = urlsplit(start.headers["location"])
+                    self.assertEqual(target.hostname, "accounts.google.com")
+                    params = parse_qs(target.query)
+                    self.assertEqual(params["code_challenge_method"], ["S256"])
+                    finish = client.get(google_login.CALLBACK, follow_redirects=False, params={
+                        "state": params["state"][0], "code": "test-code"})
+                    self.assertEqual(finish.headers["location"], "/architecture")
+                    self.assertEqual(exchange.call_args.args[2], params["nonce"][0])
+                    with main.connect() as db:
+                        self.assertEqual(db.execute("SELECT provider FROM login_history").fetchone()[0], "google")
+
     def test_assistant_alarm_and_wishlist(self):
         with TestClient(main.app, client=("127.0.0.1", 10001)) as client:
             base = "/api/assistant/"

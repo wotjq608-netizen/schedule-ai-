@@ -350,7 +350,7 @@ def fetch_catalog(url, params, query):
         return None
 
 
-def search_catalog(query):
+def search_catalog(query, *, cache=True):
     global catalog_last_fetch
     query = " ".join(query.split())[:180]
     with catalog_lock:
@@ -372,18 +372,19 @@ def search_catalog(query):
                 return None
         except (httpx.HTTPError, ValueError):
             return None
-        if len(catalog_cache) >= 64:
-            catalog_cache.pop(next(iter(catalog_cache)))
-        catalog_cache[query] = (now, results)
+        if cache:
+            if len(catalog_cache) >= 64:
+                catalog_cache.pop(next(iter(catalog_cache)))
+            catalog_cache[query] = (now, results)
         return results
 
 
-def search_products(query):
-    results = search_catalog(query)
+def search_products(query, *, guest=False):
+    results = search_catalog(query, cache=not guest)
     if results:
         return results
     key = os.getenv("OPENAI_API_KEY")
-    if not key:
+    if not key or guest:
         if results is None:
             raise HTTPException(502, "가격 비교 사이트에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.")
         return []
@@ -463,16 +464,18 @@ def make_router(connect):
         return forecast(city, day)
 
     @router.post("/interpret")
-    def route_intent(payload: Prompt):
-        return {"intent": interpret(payload)}
+    def route_intent(request: Request, payload: Prompt):
+        return {"intent": None if getattr(request.state, "guest", False) else interpret(payload)}
 
     @router.post("/ask")
-    def answer(payload: Prompt):
+    def answer(request: Request, payload: Prompt):
+        if getattr(request.state, "guest", False):
+            return {"reply": "게스트 모드에서는 날씨와 상품 조회를 할 수 있어요. 일반 AI 답변과 기록 저장은 로그인한 뒤 이용해 주세요."}
         return {"reply": ask(payload)}
 
     @router.post("/compare")
-    def compare(payload: Prompt):
-        return {"products": search_products(payload.text)}
+    def compare(request: Request, payload: Prompt):
+        return {"products": search_products(payload.text, guest=getattr(request.state, "guest", False))}
 
     @router.get("/alarms")
     def alarms(request: Request):

@@ -105,6 +105,13 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
   await expect(page).toHaveURL(/\/login$/);
   expect((await page.request.get('/api/tasks')).status()).toBe(401);
 
+  await page.getByRole('button', { name: '게스트로 입장' }).click();
+  await expect(page).toHaveURL(baseURL + '/architecture');
+  await expect(page.getByText(/게스트 모드 · 입력 기록/)).toBeVisible();
+  expect((await (await page.request.get('/api/tasks')).json()).tasks).toEqual([]);
+  await page.getByRole('button', { name: '로그아웃' }).click();
+  await expect(page).toHaveURL(/\/login$/);
+
   const admin = await browser.newContext({
     baseURL,
     ignoreHTTPSErrors: true,
@@ -114,17 +121,17 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
     const audit = await admin.newPage();
     await audit.goto('/login');
     await audit.getByRole('link', { name: '관리자 모드' }).click();
-    await expect(audit.getByRole('heading', { name: '카카오 로그인 기록' })).toBeVisible();
+    await expect(audit.getByRole('heading', { name: '로그인 기록' })).toBeVisible();
     const rows = audit.getByRole('row');
     await expect(rows).toHaveCount(2);
     await expect(rows.nth(1).getByRole('cell').first()).toHaveText(/^[a-f0-9]{24}$/);
     await expect(rows.nth(1).getByRole('cell').nth(1)).toHaveText(/\+09:00$/);
-    await expect(rows.nth(1).getByRole('cell').last()).toHaveText('127.0.0.1');
+    await expect(rows.nth(1).getByRole('cell').nth(2)).toHaveText('127.0.0.1');
     await expect(audit.getByRole('heading', { name: '관리자 대시보드' })).toBeVisible();
     await expect(audit.getByRole('region', { name: '이용 현황' })).toContainText('예정 알람');
     await audit.getByRole('textbox', { name: '계정 식별자 또는 IP 검색' }).fill('127.0.0.1');
     await audit.getByRole('button', { name: '검색' }).click();
-    await expect(audit.getByRole('row').nth(1).getByRole('cell').last()).toHaveText('127.0.0.1');
+    await expect(audit.getByRole('row').nth(1).getByRole('cell').nth(2)).toHaveText('127.0.0.1');
     expect((await audit.request.get('/api/tasks')).status()).toBe(401);
   } finally {
     await admin.close();

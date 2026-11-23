@@ -6,12 +6,13 @@
   const alarmFormat = new Intl.DateTimeFormat("ko-KR", {timeZone:"Asia/Seoul", dateStyle:"long", timeStyle:"short"});
   const cities = "서울 부산 인천 대구 대전 광주 울산 세종 수원 제주 춘천 청주 전주 포항 창원 성남".split(" ");
   const history = [];
-  const scope = panel.closest(".assistant-widget").dataset.scope;
+  const {scope, guest} = panel.closest(".assistant-widget").dataset;
   const weatherPref = "assistant-weather:" + scope;
   const candidateKey = "assistant-products:" + scope;
   let candidates = readCandidates(), comparisonShown = false;
 
   function readCandidates() {
+    if (guest === "true") return [];
     try {
       const value = JSON.parse(sessionStorage.getItem(candidateKey));
       return value?.expires > Date.now() && Array.isArray(value.products) ? value.products : [];
@@ -20,6 +21,7 @@
 
   function rememberCandidates(products) {
     candidates = products;
+    if (guest === "true") return;
     try {
       if (products.length) sessionStorage.setItem(candidateKey, JSON.stringify({products, expires:Date.now() + 3600000}));
       else sessionStorage.removeItem(candidateKey);
@@ -267,7 +269,7 @@
     const prefix = text.match(/([가-힣]{2,14})(?:의)?\s+(?:(?:오늘|내일|모레)\s+)?(?:날씨|온도|기온|옷차림|착장)/);
     const reserved = /^(오늘|내일|모레|지금|현재|이번|주말|지역|알려줘|추천|비교|최신)$/;
     let remembered = "";
-    try { remembered = localStorage.getItem(weatherPref) || ""; } catch {}
+    if (guest !== "true") { try { remembered = localStorage.getItem(weatherPref) || ""; } catch {} }
     const alternative = prefix?.[1].replace(/의$/, "");
     const city = named || intent?.city || match?.[1] || (alternative && !reserved.test(alternative) ? alternative : "") || remembered;
     const day = /모레/.test(text) ? 2 : /내일/.test(text) ? 1 : intent?.day || 0;

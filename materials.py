@@ -93,13 +93,13 @@ def basic_notes(text, kind):
 
 
 @router.post("/summarize")
-def summarize(payload: Material):
+def summarize(request: Request, payload: Material):
     text = payload.text.strip()
     if not text:
         raise HTTPException(422, "정리할 텍스트를 입력하세요.")
     openai = os.getenv("OPENAI_API_KEY")
     gemini = os.getenv("GEMINI_API_KEY")
-    if not (openai or gemini):
+    if getattr(request.state, "guest", False) or not (openai or gemini):
         return {"summary": basic_notes(text, payload.kind), "engine": "basic"}
     instructions = (
         "한국어로 읽기 쉬운 자료를 작성한다. 다음 제목별로 정리한다. "

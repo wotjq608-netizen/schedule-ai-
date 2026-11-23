@@ -301,10 +301,12 @@ function showPalettes(temperature, wet) {
 const regionSelect = el("weather-region");
 const weatherCustom = el("weather-custom");
 const cityInput = el("weather-city");
-const weatherPref = "assistant-weather:" + document.querySelector(".assistant-widget").dataset.scope;
+const weatherScope = document.querySelector(".assistant-widget").dataset;
+const weatherPref = "assistant-weather:" + weatherScope.scope;
 let weatherSequence = 0;
 
 function preferredCity() {
+  if (weatherScope.guest === "true") return "";
   try { return localStorage.getItem(weatherPref) || ""; } catch { return ""; }
 }
 
@@ -315,7 +317,7 @@ async function updateWeather(city) {
   try {
     const weather = await api("weather?" + new URLSearchParams({city}));
     if (sequence !== weatherSequence) return;
-    try { localStorage.setItem(weatherPref, city); } catch {}
+    if (weatherScope.guest !== "true") { try { localStorage.setItem(weatherPref, city); } catch {} }
     const wet = weather.precipitation > 0 || weather.rain > 0 || weather.probability >= 45;
     const chance = weather.probability == null ? "" : " · 오늘 최대 강수확률 " + weather.probability + "%";
     const rain = weather.precipitation != null ? " · 현재 강수량 " + weather.precipitation + " mm"
