@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta
 from html import escape
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -100,8 +101,10 @@ def prepare_db(db, legacy_owner=None):
         db.execute("ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'legacy'")
     db.execute("CREATE INDEX IF NOT EXISTS tasks_owner_day ON tasks(owner, day, id)")
     db.execute("""CREATE TABLE IF NOT EXISTS login_history (
-        id INTEGER PRIMARY KEY, account TEXT NOT NULL, logged_in_at TEXT NOT NULL
+        id INTEGER PRIMARY KEY, account TEXT NOT NULL, logged_in_at TEXT NOT NULL, ip TEXT
     )""")
+    if "ip" not in {row[1] for row in db.execute("PRAGMA table_info(login_history)")}:
+        db.execute("ALTER TABLE login_history ADD COLUMN ip TEXT")
     if legacy_owner:
         db.execute("UPDATE tasks SET owner = ? WHERE owner = 'legacy'", (legacy_owner,))
     changed = db.execute("PRAGMA schema_version").fetchone()[0] != version or db.total_changes > 0
@@ -234,23 +237,69 @@ async def access_control(request: Request, call_next):
     response.headers.update(headers)
     return response
 
+def login_ip(request):
+    """Record network metadata independently of the access-control allowlist."""
+    if not request.client:
+        return None
+    try:
+        peer = ipaddress.ip_address(request.client.host)
+    except ValueError:
+        return None
+    if os.getenv("RENDER") == "true":
+        if not peer.is_private or not request.headers.get("cf-ray"):
+            return None
+        # Only use Cloudflare's value when it agrees with the ingress forwarding chain.
+        try:
+            visitor = ipaddress.ip_address(request.headers.get("cf-connecting-ip", "").strip())
+            forwarding = request.headers.get("x-forwarded-for", "").split(",")
+            addresses = [ipaddress.ip_address(value.strip()) for value in forwarding[-2:]]
+            if visitor.is_global and visitor in addresses:
+                return str(visitor)
+        except ValueError:
+            pass
+        return None
+    return str(peer)
+
+
 @app.get("/admin", response_class=HTMLResponse)
-def login_history(before: int | None = Query(default=None, ge=1, le=2**63 - 1)):
+def login_history(request: Request, before: int | None = Query(default=None, ge=1, le=2**63 - 1),
+                  q: str = Query(default="", max_length=80)):
+    search = q.strip().lower()
+    where = ["id < ?"] if before else []
+    args = [before] if before else []
+    if search:
+        where.append("(instr(lower(account), ?) > 0 OR instr(lower(coalesce(ip,'')), ?) > 0)")
+        args.extend([search, search])
+    clause = " WHERE " + " AND ".join(where) if where else ""
     with connect() as db:
-        if before is None:
-            rows = db.execute("SELECT * FROM login_history ORDER BY id DESC LIMIT 51").fetchall()
-        else:
-            rows = db.execute("SELECT * FROM login_history WHERE id < ? ORDER BY id DESC LIMIT 51",
-                              (before,)).fetchall()
+        rows = db.execute("SELECT id, account, logged_in_at, ip FROM login_history" + clause +
+                          " ORDER BY id DESC LIMIT 51", args).fetchall()
+        stats = db.execute("""SELECT count(*) AS total, count(DISTINCT account) AS accounts,
+            count(CASE WHEN logged_in_at >= ? THEN 1 END) AS recent FROM login_history""",
+            ((datetime.now(KST) - timedelta(days=1)).isoformat(timespec="seconds"),)).fetchone()
+        activity = db.execute("""SELECT (SELECT count(*) FROM tasks) AS schedules,
+            (SELECT count(*) FROM assistant_wishes) AS wishes,
+            (SELECT count(*) FROM assistant_alarms WHERE done=0 AND due>?) AS alarms""",
+            (datetime.now(KST).isoformat(timespec="minutes"),)).fetchone()
     table = "".join(
-        f"<tr><td>{escape(row['account'])}</td><td>{escape(row['logged_in_at'])}</td></tr>"
+        f"<tr><td><code>{escape(row['account'])}</code></td><td>{escape(row['logged_in_at'])}</td>"
+        f"<td><code>{escape(row['ip']) if row['ip'] else '—'}</code></td></tr>"
         for row in rows[:50]
-    ) or '<tr><td colspan="2">??? ??? ????.</td></tr>'
-    links = ['<a href="/admin">?? ??</a>'] if before else []
+    ) or '<tr><td colspan="3">표시할 로그인 기록이 없습니다.</td></tr>'
+    links = ['<a href="/admin?' + escape(urlencode({"q": search}), quote=True) + '">최신 기록</a>'] if before else []
     if len(rows) == 51:
-        links.append(f'<a href="/admin?before={rows[49]["id"]}">?? ??</a>')
+        more = urlencode({"before": rows[49]["id"], "q": search})
+        links.append(f'<a href="/admin?{escape(more, quote=True)}">이전 기록 →</a>')
+    metrics = (("전체 로그인", stats["total"]), ("최근 24시간", stats["recent"]),
+               ("로그인 계정", stats["accounts"]), ("등록 일정", activity["schedules"]),
+               ("저장한 상품", activity["wishes"]), ("예정 알람", activity["alarms"]))
+    cards = "".join(f"<article><span>{label}</span><strong>{value:,}</strong></article>" for label, value in metrics)
     page = (ROOT / "admin.html").read_text(encoding="utf-8-sig")
-    return page.replace("<!-- rows -->", table).replace("<!-- pages -->", "".join(links))
+    replacements = {"rows": table, "pages": "".join(links), "metrics": cards,
+                    "query": escape(search, quote=True), "current-ip": escape(login_ip(request) or "확인할 수 없음")}
+    for marker, content in replacements.items():
+        page = page.replace(f"<!-- {marker} -->", content)
+    return page
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -303,8 +352,8 @@ def finish_kakao(request: Request, state: str = "", code: str = "", error: str =
     owner = account_owner(config, ident)
     account = hmac.digest(config.signing_secret.encode(), owner.encode(), "sha256").hex()[:24]
     with connect() as db:
-        db.execute("INSERT INTO login_history(account, logged_in_at) VALUES (?, ?)",
-                   (account, datetime.now(KST).isoformat(timespec="seconds")))
+        db.execute("INSERT INTO login_history(account, logged_in_at, ip) VALUES (?, ?, ?)",
+                   (account, datetime.now(KST).isoformat(timespec="seconds"), login_ip(request)))
     response.headers["location"] = "/architecture"
     set_login_cookie(response, kakao_login.SESSION_COOKIE, config.sign(owner, "session"),
                      kakao_login.SESSION_SECONDS)

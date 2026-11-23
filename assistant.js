@@ -95,6 +95,14 @@
       const price = product.price.toLocaleString("ko-KR") + "원";
       const reviews = "★ " + product.rating + "/5 · 리뷰 " + product.reviews.toLocaleString("ko-KR") + "개";
       card.append(h);
+      const sourceNames = {"prod.danawa.com":"다나와", "www.lotteon.com":"롯데ON"};
+      const seller = sourceNames[new URL(product.url).hostname];
+      if (seller && target !== log) {
+        const source = document.createElement("span");
+        source.className = "recommendation-source";
+        source.textContent = seller;
+        card.append(source);
+      }
       if (target === log) {
         detail.textContent = product.tier + " · " + price + " · " + reviews + "\n" + product.note;
       } else {
@@ -268,10 +276,10 @@
     const summary = data.region + " " + when + " " + (day ? "" : "현재 " + data.temperature + "도, ") +
       "최저 " + data.low + "도, 최고 " + data.high + "도. " +
       (data.probability === null ? "강수확률 정보 없음." : "최대 강수확률 " + data.probability + "퍼센트.") +
-      (data.rain > 0 ? " 예상 비 " + data.rain.toFixed(1) + "밀리미터." : " 예보상 비의 양은 0밀리미터입니다.");
+      (data.rain > 0 ? " 예상 비 " + data.rain.toFixed(1) + "밀리미터." : data.rain == null ? " 강수량 예보 정보가 없습니다." : " 예보상 비의 양은 0밀리미터입니다.");
     const clothing = "\n3색 착장. 상의 " + outfit[0] + ", 하의 " + outfit[1] + ", " +
       (rain ? "방수 신발이나 우산 " : "신발이나 소품 ") + outfit[2] + ". " + outfit[3] + "을 추천해요.";
-    bubble(summary + clothing, false, true);
+    bubble((data.stale ? "최근 저장된 예보입니다. " : "") + summary + clothing, false, true);
   }
 
   const affirmative = /^(네|예|응|좋아|그래|확인|맞아|진행(?:해\s*줘)?|실행(?:해\s*줘)?|설정(?:해\s*줘)?)[.! ]*$/;
@@ -279,7 +287,7 @@
   const question = /라고\s*(?:하면|말하면)|예를\s*들면|[?？]\s*$|수\s*있|줄\s*(?:래|수)|(?:되|가능)(?:니|나요|한가요|해요|해|요|까)|(?:어떻게|방법|인지|설정돼|있어|있나요)|뭐야|인가요/;
   const directive = /해\s*줘|맞춰\s*줘|맞춰|설정(?:해|하라)|등록(?:해|하라)|추가(?:해|하라)|골라|찜(?:해|하라)|비교해|찾아\s*줘|부탁/;
 
-  async function handle(text, voice) {
+  async function handle(text, voice, shopping) {
     if (negative.test(text)) {
       pending = null;
       bubble("진행을 취소했어요.", false, voice);
@@ -382,13 +390,14 @@
       pending = null;
       return compare(query);
     }
+    if (shopping) return compare(text);
     const {reply} = await api("ask", {text, history:history.slice(-8)});
     bubble(reply || "질문에 답할 내용을 찾지 못했어요.", false, voice);
     history.push("사용자: " + text, "비서: " + reply);
     if (history.length > 8) history.splice(0, history.length - 8);
   }
 
-  async function submit(text, voice = false) {
+  async function submit(text, voice = false, shopping = false) {
     text = text.trim();
     if (!text || busy) return;
     busy = true;
@@ -397,7 +406,7 @@
     status.textContent = "처리 중…";
     bubble(text, true);
     try {
-      await handle(text.slice(0, 500), voice);
+      await handle(text.slice(0, 500), voice, shopping);
       status.textContent = "";
     } catch (error) {
       bubble(error.message || "요청을 완료하지 못했어요.", false, voice);
@@ -417,7 +426,7 @@
     field.value = "";
     unlockSound();
     setOpen(true);
-    submit(text);
+    submit(text, false, true);
   });
 
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;

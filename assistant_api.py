@@ -2,9 +2,11 @@
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from time import monotonic
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Literal
 from urllib.parse import parse_qs, urljoin, urlsplit
 from zoneinfo import ZoneInfo
@@ -80,7 +82,7 @@ def interpret(prompt):
         "compare(상품 비교 목표), wishlist(저장된 찜 목록 조회), cancel(명백한 실행 금지) 중 하나다. "
         "mode는 information(조회), command(명확한 지시), confirmation(가능 여부 질문, 가정, 모호한 지시) 중 하나다. "
         "날씨 city는 실제로 말한 도시 또는 빈 문자열, day는 오늘 0, 내일 1, 모레 2이며 최대 6이다. "
-        "상품 추천이나 특정 종류의 제품 가격·사양 비교 요청은 compare로 분류한다. compare query에는 상품명과 조건만 적는다. "
+        "의류, 식품, 화장품, 디지털 제품 등 구매 가능한 상품의 추천 또는 가격·사양 비교 요청은 compare로 분류한다. compare query에는 상품명과 조건만 적는다. "
         "alarm_at은 날짜와 시간이 명확할 때만 ISO 8601 +09:00, 오전/오후가 없으면 24시간제로 계산한다. "
         "정보가 없으면 문자열은 빈 값, day는 0으로 둔다. 사용자 입력에 없는 조건을 만들지 않는다."
     )
@@ -114,44 +116,71 @@ def https_url(value):
         return False
 
 
-def forecast(city=None, day=0):
-    region = os.getenv("WEATHER_REGION", "서울")
-    latitude = os.getenv("WEATHER_LAT", "37.5665")
-    longitude = os.getenv("WEATHER_LON", "126.978")
-    try:
-        if city and city != region:
-            region = city
-            if city in CITIES:
-                latitude, longitude = CITIES[city]
-            else:
-                response = httpx.get("https://geocoding-api.open-meteo.com/v1/search",
-                                     params={"name": city, "count": 10, "language": "ko", "countryCode": "KR"},
-                                     timeout=6)
-                response.raise_for_status()
-                matches = response.json().get("results", [])
-                if not matches:
-                    raise HTTPException(404, "지역을 찾지 못했습니다. 시 이름을 입력해 주세요.")
-                location = matches[0]
-                latitude, longitude = location["latitude"], location["longitude"]
-                region = location["name"]
-        response = httpx.get("https://api.open-meteo.com/v1/forecast", params={
-            "latitude": latitude, "longitude": longitude, "timezone": "Asia/Seoul",
-            "current": "temperature_2m,precipitation",
-            "daily": "temperature_2m_min,temperature_2m_max,precipitation_probability_max,rain_sum,showers_sum",
-            "forecast_days": day + 1,
-        }, timeout=8)
+@lru_cache(maxsize=128)
+def resolve_city(city):
+    official = city.removesuffix("시")
+    if official in CITIES:
+        return official, *CITIES[official]
+    for name in dict.fromkeys((city, city + "시", city + "군", city + "구")):
+        response = httpx.get("https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": name, "count": 10, "language": "ko", "countryCode": "KR"}, timeout=4)
         response.raise_for_status()
-        result = response.json()
-        current, daily = result["current"], result["daily"]
-        return {"region": region, "temperature": current["temperature_2m"],
-                "precipitation": current["precipitation"], "date": daily["time"][day],
-                "low": daily["temperature_2m_min"][day], "high": daily["temperature_2m_max"][day],
-                "probability": daily["precipitation_probability_max"][day],
-                "rain": daily["rain_sum"][day] + daily["showers_sum"][day]}
-    except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError):
-        raise HTTPException(502, "날씨 정보를 가져오지 못했습니다.") from None
+        matches = [place for place in response.json().get("results", []) if place.get("country_code") == "KR"]
+        if matches:
+            place = next((place for place in matches if place["name"] == name), matches[0])
+            return place["name"], place["latitude"], place["longitude"]
+    raise HTTPException(404, "지역을 찾지 못했습니다. ‘강릉시’처럼 시·군 이름을 입력해 주세요.")
 
 
+forecast_cache = {}
+forecast_lock = Lock()
+
+
+def forecast(city=None, day=0):
+    city = (city or "").strip()
+    now = datetime.now(KST)
+    key = (city, day, now.date())
+    with forecast_lock:
+        cached = forecast_cache.get(key)
+    if cached and monotonic() - cached[0] < 180:
+        return cached[1]
+    for attempt in range(2):
+        try:
+            if city:
+                region, latitude, longitude = resolve_city(city)
+            else:
+                region = os.getenv("WEATHER_REGION", "서울") or "서울"
+                latitude = os.getenv("WEATHER_LAT", "37.5665") or "37.5665"
+                longitude = os.getenv("WEATHER_LON", "126.978") or "126.978"
+            response = httpx.get("https://api.open-meteo.com/v1/forecast", params={
+                "latitude": latitude, "longitude": longitude, "timezone": "Asia/Seoul",
+                "current": "temperature_2m,precipitation",
+                "daily": "temperature_2m_min,temperature_2m_max,precipitation_probability_max,rain_sum,showers_sum",
+                "forecast_days": day + 1,
+            }, timeout=5)
+            response.raise_for_status()
+            result = response.json()
+            current, daily = result["current"], result["daily"]
+            rain, showers = daily["rain_sum"][day], daily["showers_sum"][day]
+            data = {"region":region, "temperature":float(current["temperature_2m"]),
+                    "precipitation":current["precipitation"], "date":daily["time"][day],
+                    "low":float(daily["temperature_2m_min"][day]), "high":float(daily["temperature_2m_max"][day]),
+                    "probability":daily["precipitation_probability_max"][day],
+                    "rain":None if rain is None or showers is None else rain + showers,
+                    "as_of":now.isoformat(timespec="minutes"), "stale":False}
+            with forecast_lock:
+                if len(forecast_cache) >= 128:
+                    forecast_cache.pop(next(iter(forecast_cache)))
+                forecast_cache[key] = (monotonic(), data)
+            return data
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError):
+            if attempt == 1:
+                if cached and monotonic() - cached[0] < 3600:
+                    return {**cached[1], "stale": True}
+                raise HTTPException(502, "날씨 제공처가 응답하지 않습니다. 잠시 후 다시 조회해 주세요.") from None
+
+
+LOTTE_SEARCH = "https://www.lotteon.com/csearch/search/search"
 DANAWA_SEARCH = "https://search.danawa.com/dsearch.php"
 catalog_lock = Lock()
 catalog_cache = {}
@@ -200,7 +229,49 @@ def danawa_products(html, query):
                     url=url, review_url=url + "#bookmark_cm_opinion"))
             except ValueError:
                 continue
-    ordered = sorted(products.values(), key=lambda item: item.price)
+    return list(products.values())
+
+
+def lotte_products(html):
+    soup = BeautifulSoup(html, "html.parser")
+    products = {}
+    for tag in soup.find_all("script"):
+        script = tag.string or ""
+        if '"reviewInfo"' not in script:
+            continue
+        for block in re.finditer(r"initialData:\s*(?=\[)", script):
+            try:
+                items, _ = json.JSONDecoder().raw_decode(script, block.end())
+            except ValueError:
+                continue
+            for item in items:
+                try:
+                    if item.get("soldOutYn") == "Y" or item.get("pdType") == "AD":
+                        continue
+                    code = item["pdId"]
+                    if not re.fullmatch(r"LO\d+", code):
+                        continue
+                    url = "https://www.lotteon.com/p/product/" + code
+                    option = item.get("sitmId", "")
+                    if re.fullmatch(r"LO\d+_\d+", option):
+                        url += "?sitmNo=" + option
+                    specs = item.get("specInfo", {}).get("text", [])
+                    note = " · ".join(f"{entry['type']} {entry['value']}".strip() for entry in specs[:5])
+                    product = Product(name=item["pdName"].strip(), price=item["priceInfo"]["finalPrice"],
+                        tier="실속형", rating=item["reviewInfo"]["reviewScore"], reviews=item["reviewInfo"]["reviewCount"],
+                        note=note[:300] or "롯데ON 상품 페이지에서 옵션과 배송 정보를 확인할 수 있습니다.",
+                        url=url, review_url=url)
+                    products.setdefault(code, product)
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    continue
+    return list(products.values())
+
+
+def select_tiers(products):
+    unique = {}
+    for product in sorted(products, key=lambda item: item.price):
+        unique.setdefault(re.sub(r"[^\w]", "", product.name.lower()), product)
+    ordered = list(unique.values())
     if len(ordered) <= 1:
         return ordered
     if len(ordered) == 2:
@@ -210,6 +281,21 @@ def danawa_products(html, query):
         max(ordered[start:end], key=lambda item: (item.rating, item.reviews)).model_copy(update={"tier": tier})
         for start, end, tier in zip(boundaries, boundaries[1:], PRICE_TIERS)
     ]
+
+
+def fetch_catalog(url, params, query):
+    try:
+        with httpx.Client(timeout=9) as client:
+            response = client.get(url, params=params)
+            if response.is_redirect:
+                target = urlsplit(urljoin(str(response.url), response.headers.get("location", "")))
+                if target.scheme != "https" or target.netloc != urlsplit(url).netloc:
+                    return None
+                response = client.get(target.geturl())
+            response.raise_for_status()
+        return danawa_products(response.text, query) if url == DANAWA_SEARCH else lotte_products(response.text)
+    except (httpx.HTTPError, ValueError):
+        return None
 
 
 def search_catalog(query):
@@ -222,16 +308,16 @@ def search_catalog(query):
         if now - catalog_last_fetch < 10:
             raise HTTPException(429, "상품 검색은 10초 간격으로 할 수 있어요. 잠시 후 다시 시도해 주세요.")
         try:
-            with httpx.Client(timeout=12) as client:
-                catalog_last_fetch = monotonic()
-                response = client.get(DANAWA_SEARCH, params={"query": query})
-                if response.is_redirect:
-                    target = urlsplit(urljoin(str(response.url), response.headers.get("location", "")))
-                    if target.scheme != "https" or target.netloc != "search.danawa.com":
-                        raise ValueError("unexpected catalog redirect")
-                    response = client.get(target.geturl())
-                response.raise_for_status()
-            results = danawa_products(response.text, query)
+            catalog_last_fetch = monotonic()
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                requests = [pool.submit(fetch_catalog, url, params, query) for url, params in [
+                    (DANAWA_SEARCH, {"query":query}),
+                    (LOTTE_SEARCH, {"q":query, "render":"search", "platform":"pc"}),
+                ]]
+                sources = [job.result() for job in requests]
+            results = select_tiers([item for source in sources if source is not None for item in source])
+            if all(source is None for source in sources):
+                return None
         except (httpx.HTTPError, ValueError):
             return None
         if len(catalog_cache) >= 64:

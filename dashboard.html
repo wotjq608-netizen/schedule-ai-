@@ -318,7 +318,8 @@ async function updateWeather(city) {
     const wet = weather.precipitation > 0 || weather.rain > 0 || weather.probability >= 45;
     const chance = weather.probability == null ? "" : " · 오늘 최대 강수확률 " + weather.probability + "%";
     el("weather").textContent = weather.region + " " + weather.temperature + "°C · 현재 강수량 " +
-      weather.precipitation + " mm" + chance;
+      (weather.precipitation == null ? "정보 없음" : weather.precipitation + " mm") + chance +
+      (weather.stale ? " · 최근 저장된 날씨" : "");
     showPalettes(weather.temperature, wet);
   } catch (error) {
     if (sequence !== weatherSequence) return;

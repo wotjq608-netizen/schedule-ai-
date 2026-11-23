@@ -118,7 +118,13 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
     const rows = audit.getByRole('row');
     await expect(rows).toHaveCount(2);
     await expect(rows.nth(1).getByRole('cell').first()).toHaveText(/^[a-f0-9]{24}$/);
-    await expect(rows.nth(1).getByRole('cell').last()).toHaveText(/\+09:00$/);
+    await expect(rows.nth(1).getByRole('cell').nth(1)).toHaveText(/\+09:00$/);
+    await expect(rows.nth(1).getByRole('cell').last()).toHaveText('127.0.0.1');
+    await expect(audit.getByRole('heading', { name: '관리자 대시보드' })).toBeVisible();
+    await expect(audit.getByRole('region', { name: '이용 현황' })).toContainText('예정 알람');
+    await audit.getByRole('textbox', { name: '계정 식별자 또는 IP 검색' }).fill('127.0.0.1');
+    await audit.getByRole('button', { name: '검색' }).click();
+    await expect(audit.getByRole('row').nth(1).getByRole('cell').last()).toHaveText('127.0.0.1');
     expect((await audit.request.get('/api/tasks')).status()).toBe(401);
   } finally {
     await admin.close();
