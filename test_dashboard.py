@@ -87,6 +87,36 @@ class DashboardTests(unittest.TestCase):
         legs = {(-1, 0): (1, 0), (-1, 1): (2, 0), (0, 1): (3, 0), (1, 0): (4, 0)}
         self.assertEqual(daily_reports.best_order([0, 1], legs, visits), (1, 0))
 
+    def test_kakao_route_uses_gps_and_converts_seconds(self):
+        payload = daily_reports.ReportInput(
+            gps={"latitude": 37.55, "longitude": 126.97},
+            visits=[{"title": "방문", "address": "서울특별시 중구 세종대로 110", "score": 5},
+                    *[{"title": f"업무 {score}", "score": score} for score in range(1, 5)]],
+        )
+        real_client = httpx.Client
+
+        def respond(request):
+            self.assertEqual(request.headers["Authorization"], "KakaoAK test-only")
+            if request.url.host == "dapi.kakao.com":
+                self.assertEqual(request.url.params["query"], payload.visits[0].address)
+                return httpx.Response(200, json={"documents": [{"x": "126.978", "y": "37.566"}]})
+            self.assertEqual(request.url.host, "apis-navi.kakaomobility.com")
+            self.assertEqual(request.url.params["origin"], "126.97,37.55")
+            self.assertEqual(request.url.params["destination"], "126.978,37.566")
+            return httpx.Response(200, json={"routes": [
+                {"result_code": 0, "summary": {"duration": 121, "distance": 1800}}
+            ]})
+
+        def client(**options):
+            return real_client(transport=httpx.MockTransport(respond), **options)
+
+        with patch.dict(os.environ, {"KAKAO_MOBILITY_REST_API_KEY": "", "KAKAO_REST_API_KEY": "test-only"}):
+            with patch.object(daily_reports.httpx, "Client", side_effect=client):
+                order, route, note = daily_reports.plan_visits(payload)
+        self.assertEqual(order, [0, 4, 3, 2, 1])
+        self.assertEqual(route, {"minutes": 3, "km": 1.8})
+        self.assertIn("카카오모빌리티", note)
+
     def test_google_login_records_provider(self):
         from urllib.parse import parse_qs, urlsplit
         import google_login

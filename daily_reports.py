@@ -17,7 +17,8 @@ from pydantic import BaseModel, Field, StringConstraints
 from assistant_api import gemini_text
 
 KST = ZoneInfo("Asia/Seoul")
-MAPS = "https://maps.apigw.ntruss.com"
+KAKAO_ADDRESS = "https://dapi.kakao.com/v2/local/search/address.json"
+KAKAO_DIRECTIONS = "https://apis-navi.kakaomobility.com/v1/directions"
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=180)]
 Address = Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)]
 logger = logging.getLogger(__name__)
@@ -63,9 +64,9 @@ def progress(db, owner, day):
 
 
 def geocode(client, address):
-    response = client.get("/map-geocode/v2/geocode", params={"query": address})
+    response = client.get(KAKAO_ADDRESS, params={"query": address, "analyze_type": "exact", "size": 2})
     response.raise_for_status()
-    results = response.json()["addresses"]
+    results = response.json()["documents"]
     if len(results) != 1:
         raise ValueError("Address is missing or ambiguous")
     return f"{float(results[0]['x'])},{float(results[0]['y'])}"
@@ -74,10 +75,14 @@ def geocode(client, address):
 def drive(client, start, end):
     if start == end:
         return (0, 0)
-    response = client.get("/map-direction/v1/driving",
-                          params={"start": start, "goal": end, "option": "traoptimal"})
+    response = client.get(KAKAO_DIRECTIONS, params={
+        "origin": start, "destination": end, "priority": "TIME", "summary": "true",
+    })
     response.raise_for_status()
-    summary = response.json()["route"]["traoptimal"][0]["summary"]
+    route = response.json()["routes"][0]
+    if route["result_code"] != 0:
+        raise ValueError("No driving route returned")
+    summary = route["summary"]
     return int(summary["duration"]), int(summary["distance"])
 
 
@@ -98,16 +103,16 @@ def plan_visits(payload):
     priority = sorted(range(len(visits)), key=lambda index: -visits[index].score)
     onsite = [index for index in priority if visits[index].address]
     remote = [index for index in priority if not visits[index].address]
-    key, secret = os.getenv("NAVER_MAPS_KEY_ID"), os.getenv("NAVER_MAPS_KEY")
+    key = os.getenv("KAKAO_MOBILITY_REST_API_KEY") or os.getenv("KAKAO_REST_API_KEY")
     if not onsite:
         return priority, None, "방문 주소가 없어 점수순으로 정리했습니다."
     if not (payload.origin or payload.gps):
         return priority, None, "출발지를 입력하거나 현재 위치를 선택하면 자동차 동선을 계산합니다."
-    if not (key and secret):
-        return priority, None, "네이버 지도 연결 설정이 없어 점수순으로 정리했습니다."
-    headers = {"x-ncp-apigw-api-key-id": key, "x-ncp-apigw-api-key": secret}
+    if not key:
+        return priority, None, "카카오모빌리티 연결 설정이 없어 점수순으로 정리했습니다."
+    headers = {"Authorization": f"KakaoAK {key}"}
     try:
-        with httpx.Client(base_url=MAPS, headers=headers, timeout=5, trust_env=False) as client:
+        with httpx.Client(headers=headers, timeout=5, trust_env=False) as client:
             with ThreadPoolExecutor(max_workers=8) as pool:
                 addresses = list(dict.fromkeys([visits[index].address for index in onsite] +
                                                 ([] if payload.gps else [payload.origin])))
@@ -120,11 +125,19 @@ def plan_visits(payload):
                 legs = dict(zip(pairs, pool.map(lambda pair: drive(client, points[pair[0]], points[pair[1]]), pairs)))
         order = best_order(onsite, legs, visits)
         segments = [legs[a, b] for a, b in zip((-1, *order), order)]
-        route = {"minutes": math.ceil(sum(item[0] for item in segments) / 60000),
+        route = {"minutes": math.ceil(sum(item[0] for item in segments) / 60),
                  "km": round(sum(item[1] for item in segments) / 1000, 1)}
-        return [*order, *remote], route, "네이버 지도 자동차 예상 시간과 점수를 함께 반영했습니다."
-    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
-        logger.warning("Daily report Maps lookup failed")
+        return [*order, *remote], route, "카카오모빌리티 자동차 예상 시간과 점수를 함께 반영했습니다."
+    except httpx.HTTPStatusError as error:
+        code = error.response.status_code
+        logger.warning("Daily report Kakao API returned HTTP %s", code)
+        if code in {401, 403}:
+            return priority, None, "카카오 API의 앱 권한을 확인해 주세요. 이번에는 점수순으로 정리했습니다."
+        if code == 429:
+            return priority, None, "카카오 API 호출 한도에 도달해 점수순으로 정리했습니다."
+        return priority, None, "카카오 API 응답 오류로 점수순으로 정리했습니다."
+    except (httpx.RequestError, ValueError, KeyError, IndexError, TypeError):
+        logger.warning("Daily report Kakao route lookup failed")
         return priority, None, "주소 또는 자동차 경로를 확인하지 못해 점수순으로 정리했습니다."
 
 
