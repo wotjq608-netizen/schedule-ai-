@@ -41,25 +41,50 @@
       visits.append(row);
     }
     let gps = null;
+    let gpsToken = null;
     const origin = get("report-origin");
     const gpsButton = get("report-gps");
-    origin.addEventListener("input", () => {
+    function showQuota({remaining, limit}) {
+      get("report-gps-quota").textContent =
+        `오늘 GPS ${remaining}/${limit}회 남음 · 한국 시간 자정 초기화 · 위치 확인을 시작하면 1회 차감`;
+    }
+    const refreshQuota = () => api("reports/gps-quota").then(showQuota).catch(() => {});
+    refreshQuota();
+    function clearGps() {
       gps = null;
+      gpsToken = null;
       gpsButton.textContent = "현재 위치 사용";
-    });
-    gpsButton.addEventListener("click", () => {
+    }
+    origin.addEventListener("input", clearGps);
+    gpsButton.addEventListener("click", async () => {
       if (!navigator.geolocation) {
         status.textContent = "이 브라우저에서 위치를 가져올 수 없습니다. 출발지를 입력하세요.";
         return;
       }
       gpsButton.disabled = true;
+      origin.disabled = true;
+      try {
+        const quota = await api("reports/gps-quota", {method: "POST"});
+        showQuota(quota);
+        clearGps();
+        gpsToken = quota.token;
+      } catch (error) {
+        gpsButton.disabled = false;
+        origin.disabled = false;
+        status.textContent = error.message;
+        refreshQuota();
+        return;
+      }
       navigator.geolocation.getCurrentPosition(({coords}) => {
         gps = {latitude: coords.latitude, longitude: coords.longitude};
         origin.value = "";
+        origin.disabled = false;
         gpsButton.disabled = false;
         gpsButton.textContent = "현재 위치 선택됨";
         status.textContent = "현재 위치를 출발지로 사용합니다.";
       }, () => {
+        clearGps();
+        origin.disabled = false;
         gpsButton.disabled = false;
         status.textContent = "현재 위치를 읽지 못했습니다. 출발지 주소를 입력하세요.";
       }, {timeout: 8000, maximumAge: 30000});
@@ -98,13 +123,18 @@
           address: row.querySelector('[name="address"]').value.trim(),
           score: row.querySelector('[name="score"]').valueAsNumber,
         })),
-        origin: origin.value.trim(), gps, notes: get("report-notes").value.trim(),
+        origin: origin.value.trim(), gps, gps_token: gpsToken, notes: get("report-notes").value.trim(),
       };
       if (payload.visits.some(visit => !visit.title)) {
         status.textContent = "업무 이름 5건을 입력하세요.";
         return;
       }
+      if (gpsButton.disabled) {
+        status.textContent = "위치를 확인하고 있습니다. 잠시 기다려 주세요.";
+        return;
+      }
       const submit = form.querySelector('[type="submit"]');
+      gpsButton.disabled = true;
       submit.disabled = true;
       status.textContent = "달성률을 집계하고 업무 순서와 보고서를 작성 중입니다…";
       try {
@@ -113,11 +143,13 @@
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify(payload),
         });
+        if (payload.gps) clearGps();
         display(result);
         status.textContent = `보고서를 저장했습니다. ${engineName(result.engine)}`;
       } catch (error) {
         status.textContent = error.message;
       } finally {
+        gpsButton.disabled = false;
         submit.disabled = false;
       }
     });

@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from itertools import permutations
@@ -17,6 +18,7 @@ from pydantic import BaseModel, Field, StringConstraints
 from assistant_api import gemini_text
 
 KST = ZoneInfo("Asia/Seoul")
+GPS_DAILY_LIMIT = 3
 KAKAO_ADDRESS = "https://dapi.kakao.com/v2/local/search/address.json"
 KAKAO_DIRECTIONS = "https://apis-navi.kakaomobility.com/v1/directions"
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=180)]
@@ -39,6 +41,7 @@ class ReportInput(BaseModel):
     visits: list[Visit] = Field(min_length=5, max_length=5)
     origin: Address = ""
     gps: Coordinates | None = None
+    gps_token: str | None = Field(default=None, max_length=64)
     notes: str = Field(default="", max_length=12000)
 
 
@@ -48,6 +51,10 @@ def prepare(db):
         created_at TEXT NOT NULL, percent INTEGER, engine TEXT NOT NULL, markdown TEXT NOT NULL
     )""")
     db.execute("CREATE INDEX IF NOT EXISTS reports_owner_id ON daily_reports(owner, id)")
+    db.execute("""CREATE TABLE IF NOT EXISTS report_gps_usage (
+        owner TEXT NOT NULL, day TEXT NOT NULL, token TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(owner, day, token)
+    )""")
 
 
 def progress(db, owner, day):
@@ -223,6 +230,32 @@ def make_router(connect):
             ).fetchall()
         return {"reports": [dict(row) for row in rows[:20]], "next": rows[19]["id"] if len(rows) > 20 else None}
 
+    @router.get("/gps-quota")
+    def gps_quota(request: Request):
+        if getattr(request.state, "guest", False):
+            return {"remaining": 0, "limit": GPS_DAILY_LIMIT}
+        day = datetime.now(KST).date().isoformat()
+        with connect() as db:
+            count = db.execute("SELECT count(*) FROM report_gps_usage WHERE owner = ? AND day = ?",
+                               (request.state.owner, day)).fetchone()[0]
+        return {"remaining": GPS_DAILY_LIMIT - count, "limit": GPS_DAILY_LIMIT}
+
+    @router.post("/gps-quota")
+    def reserve_gps(request: Request):
+        day = datetime.now(KST).date().isoformat()
+        owner, token = request.state.owner, secrets.token_urlsafe(24)
+        with connect() as db:
+            saved = db.execute(
+                """INSERT INTO report_gps_usage(owner, day, token)
+                   SELECT ?, ?, ? WHERE (SELECT count(*) FROM report_gps_usage
+                   WHERE owner = ? AND day = ?) < ?""",
+                (owner, day, token, owner, day, GPS_DAILY_LIMIT))
+            if not saved.rowcount:
+                raise HTTPException(429, "오늘 GPS 3회를 모두 사용했습니다. 출발지 주소를 입력해 주세요.")
+            count = db.execute("SELECT count(*) FROM report_gps_usage WHERE owner = ? AND day = ?",
+                               (owner, day)).fetchone()[0]
+        return {"token": token, "remaining": GPS_DAILY_LIMIT - count, "limit": GPS_DAILY_LIMIT}
+
     @router.get("/{ident}")
     def report(request: Request, ident: int, download: bool = False):
         if getattr(request.state, "guest", False) or not 0 < ident < 2**63:
@@ -243,6 +276,11 @@ def make_router(connect):
         started = datetime.now(KST)
         day = started.date().isoformat()
         with connect() as db:
+            if payload.gps and not db.execute(
+                "UPDATE report_gps_usage SET used = 1 WHERE owner = ? AND day = ? AND token = ? AND used = 0",
+                (owner, day, payload.gps_token)
+            ).rowcount:
+                raise HTTPException(409, "현재 위치를 다시 선택하거나 출발지 주소를 입력해 주세요.")
             counts = progress(db, owner, day)
         markdown, engine = kickoff(payload, counts, day)
         with connect() as db:

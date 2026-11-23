@@ -1,4 +1,5 @@
 """Regression checks for the dashboard's local and deployment modes."""
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import ipaddress
 import os
@@ -50,6 +51,7 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(client.get("/api/tasks").json()["tasks"], [])
             self.assertEqual(client.post("/api/reports", headers=origin, json={}).status_code, 403)
             self.assertEqual(client.get("/api/reports").json()["reports"], [])
+            self.assertEqual(client.post("/api/reports/gps-quota", headers=origin).status_code, 403)
             with main.connect() as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM login_history").fetchone()[0], 0)
                 self.assertEqual(db.execute("SELECT count(*) FROM tasks").fetchone()[0], 0)
@@ -86,6 +88,31 @@ class DashboardTests(unittest.TestCase):
                   daily_reports.Visit(title="높은 우선순위", score=5)]
         legs = {(-1, 0): (1, 0), (-1, 1): (2, 0), (0, 1): (3, 0), (1, 0): (4, 0)}
         self.assertEqual(daily_reports.best_order([0, 1], legs, visits), (1, 0))
+
+    def test_gps_daily_quota_and_single_use(self):
+        path = "/api/reports/gps-quota"
+        with TestClient(main.app, client=("127.0.0.1", 10001)) as client:
+            self.assertEqual(client.get(path, auth=AUTH).json()["remaining"], 3)
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                results = list(pool.map(lambda _: client.post(path, auth=AUTH), range(5)))
+            self.assertEqual(sorted(response.status_code for response in results), [200, 200, 200, 429, 429])
+            self.assertEqual(client.get(path, auth=AUTH).json()["remaining"], 0)
+            token = next(response.json()["token"] for response in results if response.status_code == 200)
+            payload = {"visits": [{"title": f"업무 {score}", "score": score} for score in range(1, 6)],
+                       "gps": {"latitude": 37.55, "longitude": 126.97}}
+            with patch.object(daily_reports, "narrative", return_value=("", "python")):
+                self.assertEqual(client.post("/api/reports", auth=AUTH, json=payload).status_code, 409)
+                payload["gps_token"] = token
+                self.assertEqual(client.post("/api/reports", auth=AUTH, json=payload).status_code, 201)
+                self.assertEqual(client.post("/api/reports", auth=AUTH, json=payload).status_code, 409)
+                self.assertEqual(client.post("/api/reports", auth=AUTH, json={
+                    "visits": payload["visits"], "origin": "서울특별시 중구 세종대로 110",
+                }).status_code, 201)
+            next_day = datetime.now(main.KST) + timedelta(days=1)
+            with patch.object(daily_reports, "datetime") as clock:
+                clock.now.return_value = next_day
+                self.assertEqual(client.get(path, auth=AUTH).json()["remaining"], 3)
+                self.assertEqual(client.post(path, auth=AUTH).status_code, 200)
 
     def test_kakao_route_uses_gps_and_converts_seconds(self):
         payload = daily_reports.ReportInput(
