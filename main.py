@@ -431,12 +431,13 @@ def render_page(request, filename, current, content=""):
         links.append('<form action="/auth/logout" method="post"><button type="submit">로그아웃</button></form>')
     brand = '<a class="workspace-brand" href="/schedule"><span aria-hidden="true">◈</span> 개인 AI 비서</a>'
     nav = '<header class="workspace-top">' + brand + '<nav class="workspace-nav" aria-label="페이지">' + "".join(links) + "</nav></header>"
-    widget = (ROOT / "assistant_widget.html").read_text(encoding="utf-8")
+    scope = hashlib.sha256(request.state.owner.encode()).hexdigest()[:24]
+    widget = (ROOT / "assistant_widget.html").read_text(encoding="utf-8").replace("<!-- account-scope -->", scope)
     assets = ('<link rel="stylesheet" href="/assistant-assets/assistant.css">'
               '<link rel="stylesheet" href="/assistant-assets/workspace.css">')
     script = '<script defer src="/assistant-assets/assistant.js"></script>'
     return HTMLResponse(page.replace("<!-- workspace-nav -->", assets + nav + widget + script)
-                        .replace("<!-- shop-content -->", content))
+                        .replace("<!-- shop-content -->", content).replace("<!-- weather-regions -->", content))
 
 
 @app.get("/assistant-assets/{filename}")
@@ -447,7 +448,8 @@ def assistant_asset(filename: Literal["assistant.css", "assistant.js", "workspac
 @app.get("/")
 @app.get("/schedule")
 def dashboard(request: Request):
-    return render_page(request, "dashboard.html", "/schedule")
+    options = "".join(f'<option value="{escape(city)}">{escape(city)}</option>' for city in assistant_api.CITIES)
+    return render_page(request, "dashboard.html", "/schedule", options)
 
 
 @app.get("/architecture")
@@ -530,5 +532,5 @@ def carry(request: Request, payload: Carry):
     return {"moved": changed}
 
 @app.get("/api/weather")
-def weather():
-    return assistant_api.forecast()
+def weather(city: str | None = Query(None, max_length=60)):
+    return assistant_api.forecast(city)

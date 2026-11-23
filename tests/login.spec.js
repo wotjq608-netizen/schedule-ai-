@@ -24,8 +24,20 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
   expect((await page.request.get('/api/tasks')).status()).toBe(200);
   expect((await page.request.get('/admin')).status()).toBe(401);
   await expect(page.getByRole('heading', { name: '서비스 구성도' })).toBeVisible();
+  await page.route('**/api/weather?*', route => {
+    const city = new URL(route.request().url()).searchParams.get('city');
+    return route.fulfill({ json: { region: city || '서울', temperature: city === '부산' ? 21 : 4,
+      precipitation: 0, probability: 20, rain: 0 } });
+  });
   await page.getByRole('link', { name: '일정 관리', exact: true }).click();
   await expect(page.getByRole('heading', { name: '날씨와 착장 색 조합' })).toBeVisible();
+  await page.getByLabel('지역', { exact: true }).selectOption('부산');
+  await expect(page.locator('#weather')).toContainText('부산 21°C');
+  await expect(page.locator('#palettes article')).toHaveCount(2);
+  await page.reload();
+  await expect(page.getByLabel('지역', { exact: true })).toHaveValue('부산');
+  await expect(page.locator('#weather')).toContainText('부산 21°C');
+
   await page.getByRole('link', { name: '자료 정리', exact: true }).click();
   await expect(page.getByRole('heading', { name: '회의·발표 자료 정리' })).toBeVisible();
 
@@ -50,7 +62,7 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
   const send = async text => {
     await input.fill(text);
     await input.press('Enter');
-    await expect(page.getByRole('button', { name: '보내기', exact: true })).toBeEnabled();
+    await expect(page.locator('#assistant-send')).toBeEnabled();
   };
   await send('내일 7시에 알람 맞출 수 있어?');
   await expect(log).toContainText('알람을 설정할까요?');
@@ -61,7 +73,12 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
   expect((await (await page.request.get('/api/assistant/alarms')).json()).alarms).toHaveLength(2);
   await send('저소음 키보드 찜해줘');
   await expect(log.getByRole('link', { name: '상품평 출처' })).toBeVisible();
-  await input.fill('1번 찜해줘');
+  await page.getByRole('link', { name: '쇼핑', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '찜 목록' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '챗봇으로 상품 찾기' })).toBeVisible();
+  await page.getByRole('button', { name: 'AI 챗봇' }).click();
+  await expect(log.getByRole('heading', { name: /저소음 키보드 테스트 모델/ })).toBeVisible();
+  await input.fill('첫 번째 상품 찜 목록에 추가해줘');
   await input.press('Enter');
   await expect(page).toHaveURL(/\/shop#saved$/);
   await expect(page.getByRole('heading', { name: '찜 목록' })).toBeVisible();

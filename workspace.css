@@ -44,3 +44,13 @@ main .tunnel .node{background:#f2f4f8}
 .shop-empty h3{color:var(--ink);margin:13px 0 5px}.shop-empty p{margin:0}
 @media(max-width:810px){.wish-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.workspace-top{align-items:flex-start;flex-direction:column;margin-bottom:24px}.workspace-top .workspace-nav a,.workspace-top .workspace-nav button{padding:6px 8px;font-size:13px}.wish-grid{grid-template-columns:1fr}}
+.weather-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.weather-toolbar h2{margin:0}
+.weather-region-control{display:flex;align-items:center;gap:8px;color:#f0edff;font-size:14px}
+.weather-toolbar select,.weather-card input,.shop-chat input{font:inherit;border:1px solid #cdd5e9;border-radius:9px;background:#fff;color:var(--ink);padding:7px 9px}
+.weather-card form:not([hidden]){display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 13px}
+.weather-card form button{background:white;color:var(--accent-strong)}
+.shop-chat{box-sizing:border-box;margin:20px 0 0;padding:16px 20px;background:white;border:1px solid var(--line);border-radius:16px}
+.shop-chat label{display:block;margin-bottom:7px;font-weight:700}
+.shop-chat div{display:flex;gap:8px}.shop-chat input{min-width:0;flex:1}
+.shop-chat button{font:inherit;border:1px solid var(--accent);border-radius:9px;padding:6px 12px;cursor:pointer}

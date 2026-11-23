@@ -6,11 +6,35 @@
   const alarmFormat = new Intl.DateTimeFormat("ko-KR", {timeZone:"Asia/Seoul", dateStyle:"long", timeStyle:"short"});
   const cities = "서울 부산 인천 대구 대전 광주 울산 세종 수원 제주 춘천 청주 전주 포항 창원 성남".split(" ");
   const history = [];
+  const scope = panel.closest(".assistant-widget").dataset.scope;
+  const weatherPref = "assistant-weather:" + scope;
+  const candidateKey = "assistant-products:" + scope;
+  let candidates = readCandidates(), comparisonShown = false;
+
+  function readCandidates() {
+    try {
+      const value = JSON.parse(sessionStorage.getItem(candidateKey));
+      return value?.expires > Date.now() && Array.isArray(value.products) ? value.products : [];
+    } catch { return []; }
+  }
+
+  function rememberCandidates(products) {
+    candidates = products;
+    try {
+      if (products.length) sessionStorage.setItem(candidateKey, JSON.stringify({products, expires:Date.now() + 3600000}));
+      else sessionStorage.removeItem(candidateKey);
+    } catch {}
+  }
   let pending = null, busy = false, audioContext, alarmTimer, checking = false;
   let nextAlarms = [];
   const setOpen = (open, focus = true) => {
     panel.hidden = !open;
     get("open").setAttribute("aria-expanded", String(open));
+    if (open && !comparisonShown && candidates.length) {
+      bubble("최근 비교한 상품입니다. ‘2번 찜 목록에 추가해줘’처럼 선택하세요.");
+      showProducts(candidates, "최근 상품 비교");
+      comparisonShown = true;
+    }
     if (focus) (open ? input : get("open")).focus();
   };
   get("open").onclick = () => { unlockSound(); setOpen(panel.hidden); };
@@ -79,12 +103,14 @@
   }
 
   async function compare(query) {
+    rememberCandidates([]);
     const {products} = await api("compare", {text:query});
     if (!products.length) {
       bubble("가격과 상품평 출처를 모두 확인한 상품을 찾지 못했어요. 제품명이나 조건을 바꿔 다시 검색해 주세요.");
       return;
     }
-    pending = {kind:"products", products};
+    rememberCandidates(products);
+    comparisonShown = true;
     bubble(products.length + "개 상품을 확인했어요. ‘2번 찜해줘’처럼 번호나 상품명으로 골라 주세요. 가격은 검색 시점 기준입니다.");
     showProducts(products, "상품 비교 결과");
   }
@@ -177,13 +203,13 @@
     const match = text.match(/([가-힣]{2,14})(?:시|군|구)(?:의|에서|에|\s)/);
     const prefix = text.match(/([가-힣]{2,14})(?:의)?\s+(?:(?:오늘|내일|모레)\s+)?(?:날씨|온도|기온|옷차림|착장)/);
     const reserved = /^(오늘|내일|모레|지금|현재|이번|주말|지역|알려줘|추천|비교|최신)$/;
-    const remembered = sessionStorage.getItem("assistant-weather-city") || "";
+    let remembered = "";
+    try { remembered = localStorage.getItem(weatherPref) || ""; } catch {}
     const alternative = prefix?.[1].replace(/의$/, "");
     const city = named || intent?.city || match?.[1] || (alternative && !reserved.test(alternative) ? alternative : "") || remembered;
     const day = /모레/.test(text) ? 2 : /내일/.test(text) ? 1 : intent?.day || 0;
     const params = new URLSearchParams({city, day:String(day)});
     const data = await api("weather?" + params);
-    if (city) sessionStorage.setItem("assistant-weather-city", city);
     const when = ["오늘","내일","모레"][day] || data.date;
     const rain = data.rain > 0 || data.probability >= 45;
     const temperature = day ? (data.low + data.high) / 2 : data.temperature;
@@ -210,7 +236,7 @@
       bubble("진행을 취소했어요.", false, voice);
       return;
     }
-    if (pending && affirmative.test(text) && pending.kind !== "products") {
+    if (pending && affirmative.test(text)) {
       const task = pending;
       pending = null;
       if (task.kind === "alarm") return createAlarm(task.time, voice);
@@ -222,40 +248,45 @@
       bubble("요청을 실행하지 않았어요.", false, voice);
       return;
     }
-    if (/찜\s*목록|위시리스트/.test(text)) return wishlist();
-    if (pending?.kind === "products") {
-      const number = text.match(/^\s*([1-3])\s*번?(?:\s|$)/)?.[1] || text.match(/([1-3])\s*번/)?.[1];
-      const koreanNumber = text.match(/(첫|두|세)\s*번째/)?.[1];
-      const choice = number ? Number(number) : ({첫:1,두:2,세:3}[koreanNumber] || 0);
-      const product = choice ? pending.products[choice - 1] : pending.products.find(item => text.includes(item.name));
-      if (product) {
-        if (question.test(text) && !/찜|저장|선택/.test(text)) {
-          showProducts([product], "선택 상품 정보");
-          bubble("저장하려면 이 상품의 이름과 함께 ‘찜해줘’라고 입력해 주세요.");
-          return;
-        }
-        if (question.test(text) || /찜하지\s*마|빼고/.test(text)) {
-          if (/찜하지\s*마|빼고/.test(text)) { bubble("선택한 상품을 저장하지 않았어요."); return; }
-          pending = {kind:"save", product};
-          bubble(product.name + "을 찜할까요? ‘네’라고 답하면 저장해요.", false, voice);
-          return;
-        }
-        if (!choice || /^\s*(?:[1-3]\s*번?|(?:첫|두|세)\s*번째)[.! ]*$/.test(text) || /찜|저장|선택|골라/.test(text)) {
-          await api("wishlist", product);
-          pending = null;
-          bubble(product.name + "을 찜했어요.", false, voice);
-          return wishlist();
-        }
+    const number = text.match(/^\s*([1-3])(?:[.! ]*$|\s*번)/)?.[1] || text.match(/([1-3])\s*번/)?.[1];
+    const koreanNumber = text.match(/(첫|두|세)\s*번째/)?.[1];
+    const choice = number ? Number(number) : ({첫:1,두:2,세:3}[koreanNumber] || 0);
+    const normalized = text.toLowerCase().replace(/\s+/g, "");
+    const product = choice ? candidates[choice - 1] :
+      candidates.find(item => normalized.includes(item.name.toLowerCase().replace(/\s+/g, "")));
+    const selection = /^\s*(?:[1-3]\s*번?|(?:첫|두|세)\s*번째)[.! ]*$/.test(text);
+    const saveIntent = /찜|저장|선택|골라|담아|추가/.test(text);
+    if (product && (selection || saveIntent || normalized === product.name.toLowerCase().replace(/\s+/g, ""))) {
+      if (/빼고|제외/.test(text)) {
+        bubble("선택한 상품을 저장하지 않았어요.", false, voice);
+        return;
       }
-      if (choice) { bubble("비교 카드에 표시된 번호를 골라 주세요."); return; }
+      if (question.test(text)) {
+        if (!saveIntent) {
+          showProducts([product], "선택 상품 정보");
+          return;
+        }
+        pending = {kind:"save", product};
+        bubble(product.name + "을 찜할까요? ‘네’라고 답하면 저장해요.", false, voice);
+        return;
+      }
+      await api("wishlist", product);
+      pending = null;
+      return wishlist();
     }
+    if (choice && (selection || saveIntent)) {
+      bubble(candidates.length ? "비교 카드에 표시된 번호를 골라 주세요." :
+        "먼저 상품을 비교해 주세요. ‘저소음 키보드 찜해줘’라고 입력하면 후보를 보여드려요.");
+      return;
+    }
+    if (/찜\s*목록|위시리스트/.test(text) && !/추가|담아|넣어|저장/.test(text)) return wishlist();
     const intent = (await api("interpret", {text}).catch(() => ({}))).intent;
     if (intent?.action === "cancel") {
       pending = null;
       bubble("요청을 실행하지 않았어요.", false, voice);
       return;
     }
-    if (intent?.action === "wishlist") return wishlist();
+    if (intent?.action === "wishlist" && !/추가|담아|넣어|저장/.test(text)) return wishlist();
     if (intent?.action === "weather" || (/날씨|기온|온도|강수|비\s*(?:와|오|예보|올)|옷차림|착장|뭐\s*입/.test(text) && !/상품|쇼핑|키보드/.test(text))) {
       return weather(text, intent);
     }
@@ -328,6 +359,17 @@
     }
   }
   get("form").onsubmit = event => { event.preventDefault(); unlockSound(); submit(input.value); };
+  document.getElementById("shop-chat")?.addEventListener("submit", event => {
+    event.preventDefault();
+    if (busy) return;
+    const field = document.getElementById("shop-query");
+    const text = field.value.trim();
+    if (!text) return;
+    field.value = "";
+    unlockSound();
+    setOpen(true);
+    submit(text);
+  });
 
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   let recorder;

@@ -37,7 +37,18 @@ textarea[readonly],button:disabled{opacity:.7}
 <!-- workspace-nav -->
 <header class="page-header"><h1>일정 관리</h1></header>
 <section class="weather-card" aria-labelledby="weather-heading">
+<div class="weather-toolbar">
 <h2 id="weather-heading">날씨와 착장 색 조합</h2>
+<div class="weather-region-control"><label for="weather-region">지역</label><select id="weather-region">
+<option value="">기본 지역</option><!-- weather-regions -->
+<option value="other">다른 지역…</option>
+</select></div>
+</div>
+<form id="weather-custom" hidden>
+<label for="weather-city">시·군 이름</label>
+<input id="weather-city" maxlength="60" required>
+<button type="submit">조회</button>
+</form>
 <p class="brief" id="weather" role="status">날씨를 불러오는 중입니다.</p>
 <div id="palettes" class="palettes"></div>
 </section>
@@ -286,13 +297,53 @@ function showPalettes(temperature, wet) {
     el("palettes").append(card);
   });
 }
-api("weather").then(weather => {
-  const wet = weather.precipitation > 0 || weather.rain > 0 || weather.probability >= 45;
-  el("weather").textContent = weather.region + " " + weather.temperature + "°C · 현재 강수량 " + weather.precipitation + " mm" + (weather.probability == null ? "" : " · 오늘 최대 강수확률 " + weather.probability + "%");
-  showPalettes(weather.temperature, wet);
-}).catch(() => {
-  el("weather").textContent = "날씨를 불러오지 못했습니다. 기본 색 조합을 표시합니다.";
-  showPalettes(null, false);
+const regionSelect = el("weather-region");
+const weatherCustom = el("weather-custom");
+const cityInput = el("weather-city");
+const weatherPref = "assistant-weather:" + document.querySelector(".assistant-widget").dataset.scope;
+let weatherSequence = 0;
+
+function preferredCity() {
+  try { return localStorage.getItem(weatherPref) || ""; } catch { return ""; }
+}
+
+async function updateWeather(city) {
+  const sequence = ++weatherSequence;
+  el("palettes").replaceChildren();
+  el("weather").textContent = "선택한 지역의 날씨를 불러오는 중입니다.";
+  try {
+    const weather = await api("weather?" + new URLSearchParams({city}));
+    if (sequence !== weatherSequence) return;
+    try { localStorage.setItem(weatherPref, city); } catch {}
+    const wet = weather.precipitation > 0 || weather.rain > 0 || weather.probability >= 45;
+    const chance = weather.probability == null ? "" : " · 오늘 최대 강수확률 " + weather.probability + "%";
+    el("weather").textContent = weather.region + " " + weather.temperature + "°C · 현재 강수량 " +
+      weather.precipitation + " mm" + chance;
+    showPalettes(weather.temperature, wet);
+  } catch (error) {
+    if (sequence !== weatherSequence) return;
+    el("weather").textContent = error.message || "선택한 지역의 날씨를 불러오지 못했습니다.";
+  }
+}
+const previousCity = preferredCity();
+if (previousCity && ![...regionSelect.options].some(option => option.value === previousCity)) {
+  regionSelect.value = "other";
+  cityInput.value = previousCity;
+  weatherCustom.hidden = false;
+} else {
+  regionSelect.value = previousCity;
+}
+regionSelect.addEventListener("change", () => {
+  const custom = regionSelect.value === "other";
+  weatherCustom.hidden = !custom;
+  if (custom) cityInput.focus();
+  else updateWeather(regionSelect.value);
 });
+weatherCustom.addEventListener("submit", event => {
+  event.preventDefault();
+  const city = cityInput.value.trim();
+  if (city) updateWeather(city);
+});
+updateWeather(previousCity);
 </script>
 </html>
