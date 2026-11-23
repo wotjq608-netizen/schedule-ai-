@@ -7,6 +7,14 @@
       <button type="button" id="report-gps">현재 위치 사용</button>
     </div>
     <p id="report-gps-quota">GPS는 계정당 하루 3회입니다. 위치 확인을 시작하면 1회가 차감됩니다.</p>
+    <aside id="report-gps-limit" class="report-gps-limit" aria-labelledby="report-gps-limit-title" hidden>
+      <p id="report-gps-limit-title" role="alert"></p>
+      <p>한국 시간 자정에 무료 횟수가 초기화됩니다. 지금은 출발지 주소를 직접 입력할 수 있습니다.</p>
+      <div class="report-actions" aria-label="추가 GPS 이용 방법">
+        <button type="button" disabled>광고 보고 추가 이용 · 준비 중</button>
+        <button type="button" disabled>결제하고 추가 이용 · 준비 중</button>
+      </div>
+    </aside>
     <label for="report-origin">출발지 주소</label>
     <input id="report-origin" maxlength="200" placeholder="예: 서울특별시 중구 세종대로 110">
     <div id="report-visits"></div>

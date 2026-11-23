@@ -123,6 +123,24 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
   await expect(log).toContainText('최대 강수확률 55퍼센트');
   await expect(log).toContainText('3색 착장');
 
+  const gpsQuotaPath = '/api/reports/gps-quota';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    expect((await page.request.post(gpsQuotaPath, { headers: { Origin: baseURL } })).status()).toBe(200);
+  }
+  await page.context().setGeolocation({ latitude: 37.55, longitude: 126.97 });
+  await page.context().grantPermissions(['geolocation'], { origin: baseURL });
+  await page.goto('/schedule');
+  await expect(page.getByText(/오늘 GPS 1\/3회 남음/)).toBeVisible();
+  await page.getByRole('button', { name: '현재 위치 사용', exact: true }).click();
+  const gpsLimit = page.getByRole('alert').filter({ hasText: '오늘 무료 GPS 3회를 모두 사용했습니다.' });
+  await expect(gpsLimit).toBeVisible();
+  await expect(page.getByRole('button', { name: '광고 보고 추가 이용 · 준비 중' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '결제하고 추가 이용 · 준비 중' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '현재 위치 선택됨' })).toBeVisible();
+  await expect(page.getByLabel('출발지 주소')).toBeEnabled();
+  await page.goto('/materials');
+  await expect(gpsLimit).toBeVisible();
+
   await page.getByRole('button', { name: '로그아웃' }).click();
   await expect(page).toHaveURL(/\/login$/);
   expect((await page.request.get('/api/tasks')).status()).toBe(401);

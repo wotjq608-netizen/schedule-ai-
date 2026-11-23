@@ -86,3 +86,8 @@ main .tunnel .node{background:#f2f4f8}
 .report-panel [hidden] { display: none; }
 #report-list { display: grid; gap: 8px; list-style: none; padding: 0; }
 @media (max-width: 620px) { .report-visit { grid-template-columns: 1fr; } }
+
+.report-gps-limit { background: #fff7e5; border: 1px solid #ead3a0; border-radius: 12px; padding: 12px; }
+.report-gps-limit p { margin: 0 0 10px; }
+#report-gps-limit-title { font-weight: 700; }
+.report-gps-limit button:disabled { background: #f8f4eb; color: #544a36; cursor: default; }

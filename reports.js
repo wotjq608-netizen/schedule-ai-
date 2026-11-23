@@ -10,7 +10,9 @@
     const response = await fetch("/api/" + path, options);
     const result = await response.json();
     if (!response.ok) {
-      throw new Error(typeof result.detail === "string" ? result.detail : "입력값을 확인해 주세요.");
+      const error = new Error(typeof result.detail === "string" ? result.detail : "입력값을 확인해 주세요.");
+      error.status = response.status;
+      throw error;
     }
     return result;
   }
@@ -45,12 +47,29 @@
     let gpsToken = null;
     const origin = get("report-origin");
     const gpsButton = get("report-gps");
+    const limitPanel = get("report-gps-limit");
+    const limitTitle = get("report-gps-limit-title");
+    let quotaVersion = 0;
     function showQuota({remaining, limit}) {
       get("report-gps-quota").textContent =
         `오늘 GPS ${remaining}/${limit}회 남음 · 한국 시간 자정 초기화 · 위치 확인을 시작하면 1회 차감`;
+      const exhausted = remaining === 0;
+      if (limitPanel.hidden === exhausted) {
+        limitPanel.hidden = !exhausted;
+        limitTitle.textContent = exhausted ? `오늘 무료 GPS ${limit}회를 모두 사용했습니다.` : "";
+      }
     }
-    const refreshQuota = () => api("reports/gps-quota").then(showQuota).catch(() => {});
+    async function refreshQuota() {
+      const version = quotaVersion;
+      try {
+        const quota = await api("reports/gps-quota");
+        if (version === quotaVersion) showQuota(quota);
+      } catch {
+        // Keep the last confirmed count until a quota request succeeds.
+      }
+    }
     refreshQuota();
+    window.addEventListener("focus", refreshQuota);
     function clearGps() {
       gps = null;
       gpsToken = null;
@@ -64,15 +83,22 @@
       }
       gpsButton.disabled = true;
       origin.disabled = true;
+      quotaVersion++;
       try {
         const quota = await api("reports/gps-quota", {method: "POST"});
+        quotaVersion++;
         showQuota(quota);
         clearGps();
         gpsToken = quota.token;
       } catch (error) {
         gpsButton.disabled = false;
         origin.disabled = false;
-        status.textContent = error.message;
+        quotaVersion++;
+        if (error.status === 429) {
+          showQuota({remaining: 0, limit: 3});
+        } else {
+          status.textContent = error.message;
+        }
         refreshQuota();
         return;
       }
