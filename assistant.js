@@ -279,7 +279,7 @@
       (data.rain > 0 ? " 예상 비 " + data.rain.toFixed(1) + "밀리미터." : data.rain == null ? " 강수량 예보 정보가 없습니다." : " 예보상 비의 양은 0밀리미터입니다.");
     const clothing = "\n3색 착장. 상의 " + outfit[0] + ", 하의 " + outfit[1] + ", " +
       (rain ? "방수 신발이나 우산 " : "신발이나 소품 ") + outfit[2] + ". " + outfit[3] + "을 추천해요.";
-    bubble((data.stale ? "최근 저장된 예보입니다. " : "") + summary + clothing, false, true);
+    bubble((data.stale ? "최근 저장된 예보입니다. " : "") + summary + clothing + (data.source ? "\n출처 " + data.source : ""), false, true);
   }
 
   const affirmative = /^(네|예|응|좋아|그래|확인|맞아|진행(?:해\s*줘)?|실행(?:해\s*줘)?|설정(?:해\s*줘)?)[.! ]*$/;

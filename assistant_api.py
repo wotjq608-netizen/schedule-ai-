@@ -1,5 +1,6 @@
 """Data and external lookups used by the floating assistant."""
 import json
+import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -19,11 +20,11 @@ from pydantic import BaseModel, Field
 KST = ZoneInfo("Asia/Seoul")
 PRICE_TIERS = ("실속형", "중간 가격대", "프리미엄")
 CITIES = dict(zip(
-    "서울 부산 인천 대구 대전 광주 울산 세종 수원 제주 춘천 청주 전주 포항 창원 성남".split(),
+    "서울 부산 인천 대구 대전 광주 울산 세종 수원 제주 춘천 청주 전주 포항 창원 성남 강릉".split(),
     [(37.5665,126.978),(35.1796,129.0756),(37.4563,126.7052),(35.8714,128.6014),
      (36.3504,127.3845),(35.1595,126.8526),(35.5384,129.3114),(36.48,127.29),
      (37.2636,127.0286),(33.4996,126.5312),(37.8813,127.7298),(36.6424,127.489),
-     (35.8242,127.148),(36.019,129.3435),(35.227,128.681),(37.42,127.126)],
+     (35.8242,127.148),(36.019,129.3435),(35.227,128.681),(37.42,127.126),(37.7525,128.8761)],
 ))
 
 
@@ -136,6 +137,58 @@ forecast_cache = {}
 forecast_lock = Lock()
 
 
+WEATHER_ERRORS = (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError)
+
+
+def open_meteo_forecast(latitude, longitude, day):
+    response = httpx.get("https://api.open-meteo.com/v1/forecast", params={
+        "latitude": latitude, "longitude": longitude, "timezone": "Asia/Seoul",
+        "current": "temperature_2m,precipitation",
+        "daily": "temperature_2m_min,temperature_2m_max,precipitation_probability_max,rain_sum,showers_sum",
+        "forecast_days": day + 1,
+    }, timeout=4)
+    response.raise_for_status()
+    result = response.json()
+    current, daily = result["current"], result["daily"]
+    rain, showers = daily["rain_sum"][day], daily["showers_sum"][day]
+    return {"temperature":float(current["temperature_2m"]), "precipitation":current["precipitation"],
+            "date":daily["time"][day], "low":float(daily["temperature_2m_min"][day]),
+            "high":float(daily["temperature_2m_max"][day]),
+            "probability":daily["precipitation_probability_max"][day],
+            "rain":None if rain is None or showers is None else rain + showers, "source":"Open-Meteo"}
+
+
+@lru_cache(maxsize=128)
+def met_series(latitude, longitude, refresh_window):
+    response = httpx.get("https://api.met.no/weatherapi/locationforecast/2.0/compact",
+        params={"lat":latitude,"lon":longitude},
+        headers={"User-Agent":"PersonalScheduler/1.0 https://schedule-ai-9n1h.onrender.com"},
+        timeout=7)
+    response.raise_for_status()
+    return [(datetime.fromisoformat(row["time"].replace("Z", "+00:00")).astimezone(KST), row["data"])
+            for row in response.json()["properties"]["timeseries"]]
+
+
+def met_forecast(latitude, longitude, day):
+    now = datetime.now(KST)
+    requested = (now + timedelta(days=day)).date()
+    series = met_series(round(float(latitude), 4), round(float(longitude), 4), int(now.timestamp()) // 1800)
+    period = [(stamp, data) for stamp, data in series if stamp.date() == requested]
+    temperatures = [data["instant"]["details"]["air_temperature"] for _, data in period]
+    current = min(series, key=lambda row: abs((row[0] - now).total_seconds()))[1]["instant"]["details"]
+    rain = []
+    for i, (stamp, data) in enumerate(period):
+        hours = (period[i + 1][0] - stamp).total_seconds() / 3600 if i + 1 < len(period) else 1
+        interval = data.get("next_1_hours" if hours <= 1 else "next_6_hours", {})
+        symbol = interval.get("summary", {}).get("symbol_code", "")
+        amount = interval.get("details", {}).get("precipitation_amount")
+        if amount is not None:
+            rain.append(amount if "rain" in symbol else 0)
+    return {"temperature":current["air_temperature"], "precipitation":None, "date":requested.isoformat(),
+            "low":min(temperatures), "high":max(temperatures), "probability":None,
+            "rain":round(sum(rain), 1) if rain else None, "source":"MET Norway"}
+
+
 def forecast(city=None, day=0):
     city = (city or "").strip()
     now = datetime.now(KST)
@@ -144,40 +197,29 @@ def forecast(city=None, day=0):
         cached = forecast_cache.get(key)
     if cached and monotonic() - cached[0] < 180:
         return cached[1]
-    for attempt in range(2):
+    try:
+        if city:
+            region, latitude, longitude = resolve_city(city)
+        else:
+            region = os.getenv("WEATHER_REGION", "서울") or "서울"
+            latitude = os.getenv("WEATHER_LAT", "37.5665") or "37.5665"
+            longitude = os.getenv("WEATHER_LON", "126.978") or "126.978"
         try:
-            if city:
-                region, latitude, longitude = resolve_city(city)
-            else:
-                region = os.getenv("WEATHER_REGION", "서울") or "서울"
-                latitude = os.getenv("WEATHER_LAT", "37.5665") or "37.5665"
-                longitude = os.getenv("WEATHER_LON", "126.978") or "126.978"
-            response = httpx.get("https://api.open-meteo.com/v1/forecast", params={
-                "latitude": latitude, "longitude": longitude, "timezone": "Asia/Seoul",
-                "current": "temperature_2m,precipitation",
-                "daily": "temperature_2m_min,temperature_2m_max,precipitation_probability_max,rain_sum,showers_sum",
-                "forecast_days": day + 1,
-            }, timeout=5)
-            response.raise_for_status()
-            result = response.json()
-            current, daily = result["current"], result["daily"]
-            rain, showers = daily["rain_sum"][day], daily["showers_sum"][day]
-            data = {"region":region, "temperature":float(current["temperature_2m"]),
-                    "precipitation":current["precipitation"], "date":daily["time"][day],
-                    "low":float(daily["temperature_2m_min"][day]), "high":float(daily["temperature_2m_max"][day]),
-                    "probability":daily["precipitation_probability_max"][day],
-                    "rain":None if rain is None or showers is None else rain + showers,
-                    "as_of":now.isoformat(timespec="minutes"), "stale":False}
-            with forecast_lock:
-                if len(forecast_cache) >= 128:
-                    forecast_cache.pop(next(iter(forecast_cache)))
-                forecast_cache[key] = (monotonic(), data)
-            return data
-        except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError):
-            if attempt == 1:
-                if cached and monotonic() - cached[0] < 3600:
-                    return {**cached[1], "stale": True}
-                raise HTTPException(502, "날씨 제공처가 응답하지 않습니다. 잠시 후 다시 조회해 주세요.") from None
+            data = open_meteo_forecast(latitude, longitude, day)
+        except WEATHER_ERRORS as exc:
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
+            logging.getLogger("uvicorn.error").warning("Open-Meteo forecast unavailable (%s)", status)
+            data = met_forecast(latitude, longitude, day)
+    except WEATHER_ERRORS:
+        if cached and monotonic() - cached[0] < 3600:
+            return {**cached[1], "stale": True}
+        raise HTTPException(502, "날씨 제공처가 응답하지 않습니다. 잠시 후 다시 조회해 주세요.") from None
+    data.update(region=region, as_of=now.isoformat(timespec="minutes"), stale=False)
+    with forecast_lock:
+        if len(forecast_cache) >= 128:
+            forecast_cache.pop(next(iter(forecast_cache)))
+        forecast_cache[key] = (monotonic(), data)
+    return data
 
 
 LOTTE_SEARCH = "https://www.lotteon.com/csearch/search/search"
