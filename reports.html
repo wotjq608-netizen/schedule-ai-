@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>업무 보고서</title>
+</head>
+<body>
+<!-- workspace-nav -->
+<main class="report-history">
+  <h1>업무 보고서</h1>
+  <p><a href="/schedule#report-heading">일정에서 보고서 만들기</a> · <a href="/materials#report-heading">회의 자료에서 보고서 만들기</a></p>
+  <section class="report-panel" aria-label="보고서 이력">
+    <p id="report-status" role="status"></p>
+    <ul id="report-list"></ul>
+    <button type="button" id="report-more" hidden>더 보기</button>
+  </section>
+  <section class="report-panel" aria-label="선택한 보고서">
+    <a id="report-download" hidden>Markdown 다운로드</a>
+    <pre id="report-preview">이력에서 보고서를 선택하세요.</pre>
+  </section>
+</main>
+<script defer src="/assistant-assets/reports.js"></script>
+</body>
+</html>

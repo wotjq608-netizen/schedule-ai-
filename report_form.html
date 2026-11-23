@@ -1,0 +1,24 @@
+<section class="report-panel" aria-labelledby="report-heading">
+  <h2 id="report-heading">오늘 업무 보고서 만들기</h2>
+  <p>업무 5건에 우선순위 점수(1~5)를 입력하세요. 5가 가장 높습니다. 방문 업무에는 도로명 주소를 적어 주세요.</p>
+  <form id="report-form">
+    <div class="report-actions">
+      <button type="button" id="report-fill">오늘 미완료 일정 불러오기</button>
+      <button type="button" id="report-gps">현재 위치 사용</button>
+    </div>
+    <label for="report-origin">출발지 주소</label>
+    <input id="report-origin" maxlength="200" placeholder="예: 서울특별시 중구 세종대로 110">
+    <div id="report-visits"></div>
+    <label for="report-notes">회의 정리 자료</label>
+    <textarea id="report-notes" maxlength="12000" rows="4"></textarea>
+    <p>보고서를 생성하면 입력한 업무와 회의 자료가 Gemini에, 출발 위치와 방문 주소가 네이버 지도에 전송됩니다. 보고서는 내 계정에 저장됩니다.</p>
+    <div class="report-actions">
+      <button type="submit" class="primary">보고서 생성</button>
+      <a href="/reports">보고서 이력</a>
+    </div>
+  </form>
+  <p id="report-status" role="status"></p>
+  <pre id="report-preview" hidden></pre>
+  <a id="report-download" hidden>Markdown 다운로드</a>
+</section>
+<script defer src="/assistant-assets/reports.js"></script>

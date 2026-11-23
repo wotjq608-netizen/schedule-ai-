@@ -12,6 +12,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 import codex_reply
+import daily_reports
 import drive_storage
 import main
 
@@ -47,9 +48,44 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(result.json()["tasks"], [])
             self.assertEqual(client.post("/api/assistant/wishlist", headers=origin, json={}).status_code, 403)
             self.assertEqual(client.get("/api/tasks").json()["tasks"], [])
+            self.assertEqual(client.post("/api/reports", headers=origin, json={}).status_code, 403)
+            self.assertEqual(client.get("/api/reports").json()["reports"], [])
             with main.connect() as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM login_history").fetchone()[0], 0)
                 self.assertEqual(db.execute("SELECT count(*) FROM tasks").fetchone()[0], 0)
+
+    def test_daily_report_workflow(self):
+        visits = [{"title": f"업무 {score}", "score": score} for score in range(1, 6)]
+        with TestClient(main.app, client=("127.0.0.1", 10001)) as client:
+            self.assertEqual(client.get("/api/tasks", auth=AUTH).json()["progress"]["percent"], None)
+            with main.connect() as db:
+                db.executemany("INSERT INTO tasks(title, day, time, category, done, owner) VALUES (?,?,?,?,?,?)", [
+                    ("완료", main.today().isoformat(), "", "업무", 1, "legacy"),
+                    ("예정", main.today().isoformat(), "", "업무", 0, "legacy"),
+                    ("다른 계정", main.today().isoformat(), "", "업무", 0, "other"),
+                ])
+            self.assertEqual(client.get("/api/tasks", auth=AUTH).json()["progress"]["percent"], 50)
+            self.assertEqual(client.post("/api/reports", auth=AUTH, json={"visits": visits[:4]}).status_code, 422)
+            with patch.object(daily_reports, "narrative", return_value=("오늘의 검토 결과입니다.", "crewai")) as writer:
+                created = client.post("/api/reports", auth=AUTH, json={"visits": visits, "notes": "회의 후속 업무"})
+            self.assertEqual(created.status_code, 201)
+            self.assertIn("회의 후속 업무", writer.call_args.args[0])
+            report = created.json()
+            self.assertIn("50%", report["markdown"])
+            self.assertIn("1. 업무 5", report["markdown"])
+            path = f"/api/reports/{report['id']}"
+            self.assertEqual(client.get("/api/reports", auth=AUTH).json()["reports"][0]["id"], report["id"])
+            self.assertIn("attachment", client.get(path + "?download=true", auth=AUTH).headers["content-disposition"])
+            with main.connect() as db:
+                db.execute("UPDATE daily_reports SET owner = 'other'")
+            self.assertEqual(client.get(path, auth=AUTH).status_code, 404)
+            self.assertEqual(client.get("/api/reports", auth=AUTH).json()["reports"], [])
+
+    def test_route_uses_priority_weighted_arrival_times(self):
+        visits = [daily_reports.Visit(title="낮은 우선순위", score=1),
+                  daily_reports.Visit(title="높은 우선순위", score=5)]
+        legs = {(-1, 0): (1, 0), (-1, 1): (2, 0), (0, 1): (3, 0), (1, 0): (4, 0)}
+        self.assertEqual(daily_reports.best_order([0, 1], legs, visits), (1, 0))
 
     def test_google_login_records_provider(self):
         from urllib.parse import parse_qs, urlsplit

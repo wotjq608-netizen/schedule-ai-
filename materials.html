@@ -51,6 +51,7 @@ button{cursor:pointer}.primary{background:#1d573e;color:#fff}.primary:hover{back
 <div id="output" class="output" tabindex="0"></div>
 </section>
 </div>
+<!-- daily-report-form -->
 </main>
 <script>
 const el = id => document.getElementById(id);
@@ -109,6 +110,7 @@ el("material-form").addEventListener("submit", event => {
       body: JSON.stringify({kind: kind.value, text})
     });
     output.textContent = result.summary;
+    document.dispatchEvent(new CustomEvent("material-organized", {detail: result.summary}));
     savedKind = kind.value;
     el("engine").textContent = result.engine === "basic" ? "기본 정리 · 입력 문장 기준" : "AI 정리";
     el("copy").disabled = el("download").disabled = false;

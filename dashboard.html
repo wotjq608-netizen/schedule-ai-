@@ -52,6 +52,7 @@ textarea[readonly],button:disabled{opacity:.7}
 <p class="brief" id="weather" role="status">날씨를 불러오는 중입니다.</p>
 <div id="palettes" class="palettes"></div>
 </section>
+<p id="daily-progress" role="status"></p>
 <div class="layout">
 <section><h2>AI와 일정 정리</h2>
 <p class="engine">AI 비서가 답변합니다. API를 사용할 수 없을 때 서버 설정에 따라 Codex CLI로 답변할 수 있습니다.</p>
@@ -69,7 +70,9 @@ textarea[readonly],button:disabled{opacity:.7}
 <p id="progress" class="progress"></p><ul id="tasks"></ul>
 <details id="carry"><summary>지난 미완료 일정 이월</summary><ul id="overdue"></ul><button id="move">선택한 날짜로 옮기기</button></details>
 <p id="status" role="status"></p></section>
-</div></main>
+</div>
+<!-- daily-report-form -->
+</main>
 <script>
 const el = id => document.getElementById(id);
 const format = (year, month, day) => [year, ...[month, day].map(n => String(n).padStart(2, "0"))].join("-");
@@ -93,6 +96,7 @@ async function refresh() {
   const result = await api("tasks");
   today = result.today;
   items = result.tasks;
+  el("daily-progress").textContent = result.progress?.message || "오늘 기록한 일정이 없습니다.";
   if (!selected) {
     setDate(today);
     el("goto-today").disabled = false;

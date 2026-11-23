@@ -24,6 +24,7 @@ from itsdangerous import BadData, URLSafeTimedSerializer
 from pydantic import BaseModel, Field
 
 import assistant_api
+import daily_reports
 import codex_reply
 import google_login
 import kakao_login
@@ -104,6 +105,7 @@ def prepare_db(db, legacy_owner=None):
     version = db.execute("PRAGMA schema_version").fetchone()[0]
     db.execute(SCHEMA)
     assistant_api.prepare(db)
+    daily_reports.prepare(db)
     if "owner" not in {row[1] for row in db.execute("PRAGMA table_info(tasks)")}:
         db.execute("ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'legacy'")
     db.execute("CREATE INDEX IF NOT EXISTS tasks_owner_day ON tasks(owner, day, id)")
@@ -185,7 +187,8 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 
 app.include_router(materials.router)
 app.include_router(assistant_api.make_router(connect))
-PAGES = {"/architecture": "구성도", "/schedule": "일정 관리", "/materials": "자료 정리", "/shop": "쇼핑"}
+app.include_router(daily_reports.make_router(connect))
+PAGES = {"/architecture": "구성도", "/schedule": "일정 관리", "/materials": "자료 정리", "/shop": "쇼핑", "/reports": "업무 보고서"}
 
 
 @app.exception_handler(StorageError)
@@ -611,12 +614,15 @@ def render_page(request, filename, current, content=""):
     assets = ('<link rel="stylesheet" href="/assistant-assets/assistant.css">'
               '<link rel="stylesheet" href="/assistant-assets/workspace.css">')
     script = '<script defer src="/assistant-assets/assistant.js"></script>'
+    if "<!-- daily-report-form -->" in page:
+        form = (ROOT / "report_form.html").read_text(encoding="utf-8")
+        page = page.replace("<!-- daily-report-form -->", form)
     return HTMLResponse(page.replace("<!-- workspace-nav -->", assets + nav + widget + script)
                         .replace("<!-- shop-content -->", content).replace("<!-- weather-regions -->", content))
 
 
 @app.get("/assistant-assets/{filename}")
-def assistant_asset(filename: Literal["assistant.css", "assistant.js", "workspace.css"]):
+def assistant_asset(filename: Literal["assistant.css", "assistant.js", "workspace.css", "reports.js"]):
     return FileResponse(ROOT / filename)
 
 
@@ -635,6 +641,11 @@ def architecture(request: Request):
 @app.get("/materials")
 def materials_page(request: Request):
     return render_page(request, "materials.html", "/materials")
+
+
+@app.get("/reports")
+def reports_page(request: Request):
+    return render_page(request, "reports.html", "/reports")
 
 
 @app.get("/shop")
@@ -683,7 +694,9 @@ def tasks(request: Request):
     with connect() as db:
         rows = db.execute("SELECT id, title, day, time, category, done FROM tasks WHERE owner = ? ORDER BY day, id",
                           (request.state.owner,))
-        return {"today": today(), "tasks": [dict(row) for row in rows]}
+        day = today()
+        return {"today": day, "tasks": [dict(row) for row in rows],
+                "progress": daily_reports.progress(db, request.state.owner, day.isoformat())}
 
 @app.patch("/api/tasks/{ident}")
 def complete(request: Request, ident: int, payload: Completion):
