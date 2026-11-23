@@ -188,7 +188,7 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 app.include_router(materials.router)
 app.include_router(assistant_api.make_router(connect))
 app.include_router(daily_reports.make_router(connect))
-PAGES = {"/architecture": "구성도", "/schedule": "일정 관리", "/materials": "자료 정리", "/shop": "쇼핑", "/reports": "업무 보고서"}
+PAGES = {"/architecture": "구성도", "/schedule": "일정 관리", "/materials": "자료 정리", "/shop": "쇼핑"}
 
 
 @app.exception_handler(StorageError)
@@ -248,11 +248,11 @@ async def access_control(request: Request, call_next):
                                     status_code=403, headers=headers)
         response = await call_next(request)
         response.headers.update(headers)
-        if method == "GET" and path in {"/", *PAGES}:
+        if method == "GET" and path in {"/", "/reports", *PAGES}:
             response.headers["Referrer-Policy"] = "same-origin"
         return response
     if request.app.state.kakao or request.app.state.google:
-        if method == "GET" and path in {"/", *PAGES}:
+        if method == "GET" and path in {"/", "/reports", *PAGES}:
             return RedirectResponse("/login", status_code=303, headers=headers)
         return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401, headers=headers)
     if not await authorized_admin(request, AUTH):
@@ -325,17 +325,29 @@ def login_ip(request):
 
 @app.get("/admin", response_class=HTMLResponse)
 def login_history(request: Request, before: int | None = Query(default=None, ge=1, le=2**63 - 1),
-                  q: str = Query(default="", max_length=80)):
+                  q: str = Query(default="", max_length=80), view: Literal["login", "gps"] = "login"):
     search = q.strip().lower()
-    where = ["id < ?"] if before else []
-    args = [before] if before else []
+    gps = view == "gps"
+    source = ("SELECT rowid AS id, audit_account(owner) AS account, day, requested_at, used "
+              "FROM report_gps_usage" if gps else
+              "SELECT id, account, logged_in_at, ip, provider FROM login_history")
+    conditions, args = [], []
+    if before:
+        conditions.append("id < ?")
+        args.append(before)
     if search:
-        where.append("(instr(lower(account), ?) > 0 OR instr(lower(coalesce(ip,'')), ?) > 0)")
-        args.extend([search, search])
-    clause = " WHERE " + " AND ".join(where) if where else ""
+        conditions.append("instr(account, ?) > 0" if gps else
+                          "(instr(lower(account), ?) > 0 OR instr(lower(coalesce(ip,'')), ?) > 0)")
+        args.extend([search] if gps else [search, search])
+    clause = " WHERE " + " AND ".join(conditions) if conditions else ""
     with connect() as db:
-        rows = db.execute("SELECT id, account, logged_in_at, ip, provider FROM login_history" + clause +
-                          " ORDER BY id DESC LIMIT 51", args).fetchall()
+        if gps:
+            db.create_function("audit_account", 1, lambda owner: audit_account(request, owner), deterministic=True)
+        rows = db.execute(f"SELECT * FROM ({source}){clause} ORDER BY id DESC LIMIT 51", args).fetchall()
+        gps_stats = db.execute(
+            "SELECT count(*) AS total, count(DISTINCT owner) AS accounts FROM report_gps_usage WHERE day = ?",
+            (today().isoformat(),)
+        ).fetchone()
         stats = db.execute("""SELECT count(*) AS total, count(DISTINCT account) AS accounts,
             count(CASE WHEN logged_in_at >= ? THEN 1 END) AS recent FROM login_history""",
             ((datetime.now(KST) - timedelta(days=1)).isoformat(timespec="seconds"),)).fetchone()
@@ -343,22 +355,45 @@ def login_history(request: Request, before: int | None = Query(default=None, ge=
             (SELECT count(*) FROM assistant_wishes) AS wishes,
             (SELECT count(*) FROM assistant_alarms WHERE done=0 AND due>?) AS alarms""",
             (datetime.now(KST).isoformat(timespec="minutes"),)).fetchone()
-    table = "".join(
-        f"<tr><td><code>{escape(row['account'])}</code></td><td>{escape(row['logged_in_at'])}</td>"
-        f"<td><code>{escape(row['ip']) if row['ip'] else '—'}</code></td>"
-        f"<td>{'구글' if row['provider'] == 'google' else '카카오'}</td></tr>"
-        for row in rows[:50]
-    ) or '<tr><td colspan="4">표시할 로그인 기록이 없습니다.</td></tr>'
-    links = ['<a href="/admin?' + escape(urlencode({"q": search}), quote=True) + '">최신 기록</a>'] if before else []
+    if gps:
+        table = "".join(
+            f"<tr><td><code>{escape(row['account'])}</code></td><td>{escape(row['day'])}</td>"
+            f"<td>{escape(row['requested_at'] or '시각 미기록')}</td>"
+            f"<td>{'보고서 생성에 사용' if row['used'] else '위치 확인 요청'}</td></tr>"
+            for row in rows[:50]
+        )
+        title = "GPS 사용 기록"
+        description = "계정별 위치 확인 요청과 보고서 생성 사용 여부를 표시합니다. 각 요청은 1회 차감됩니다."
+        search_label = "계정 식별자 검색"
+        columns = ("계정 식별자", "사용 날짜", "요청 시각 (한국 시간)", "상태")
+    else:
+        table = "".join(
+            f"<tr><td><code>{escape(row['account'])}</code></td><td>{escape(row['logged_in_at'])}</td>"
+            f"<td><code>{escape(row['ip']) if row['ip'] else '—'}</code></td>"
+            f"<td>{'구글' if row['provider'] == 'google' else '카카오'}</td></tr>"
+            for row in rows[:50]
+        )
+        title = "로그인 기록"
+        description = "성공한 로그인만 표시합니다. 시각은 한국 표준시입니다. 확인할 수 없는 IP는 ‘—’로 표시합니다."
+        search_label = "계정 식별자 또는 IP 검색"
+        columns = ("계정 식별자", "로그인 시각", "접속 IP", "로그인 방식")
+    table = table or f'<tr><td colspan="4">표시할 {title}이 없습니다.</td></tr>'
+    filters = {"q": search, "view": view}
+    links = [f'<a href="/admin?{escape(urlencode(filters), quote=True)}">최신 기록</a>'] if before else []
     if len(rows) == 51:
-        more = urlencode({"before": rows[49]["id"], "q": search})
+        more = urlencode({**filters, "before": rows[49]["id"]})
         links.append(f'<a href="/admin?{escape(more, quote=True)}">이전 기록 →</a>')
     metrics = (("전체 로그인", stats["total"]), ("최근 24시간", stats["recent"]),
                ("로그인 계정", stats["accounts"]), ("등록 일정", activity["schedules"]),
-               ("저장한 상품", activity["wishes"]), ("예정 알람", activity["alarms"]))
+               ("저장한 상품", activity["wishes"]), ("예정 알람", activity["alarms"]),
+               ("오늘 GPS 사용", gps_stats["total"]), ("오늘 GPS 사용 계정", gps_stats["accounts"]))
     cards = "".join(f"<article><span>{label}</span><strong>{value:,}</strong></article>" for label, value in metrics)
     page = (ROOT / "admin.html").read_text(encoding="utf-8-sig")
     replacements = {"rows": table, "pages": "".join(links), "metrics": cards,
+                    "title": title, "description": description, "search-label": search_label, "view": view,
+                    "gps-current": 'aria-current="page"' if gps else "",
+                    "login-current": "" if gps else 'aria-current="page"',
+                    "columns": "".join(f'<th scope="col">{label}</th>' for label in columns),
                     "query": escape(search, quote=True), "current-ip": escape(login_ip(request) or "확인할 수 없음")}
     for marker, content in replacements.items():
         page = page.replace(f"<!-- {marker} -->", content)
@@ -423,8 +458,12 @@ def finish_kakao(request: Request, state: str = "", code: str = "", error: str =
     return complete_login(request, owner, "kakao", response)
 
 
+def audit_account(request, owner):
+    return hmac.digest(request.app.state.signing_secret.encode(), owner.encode(), "sha256").hex()[:24]
+
+
 def complete_login(request, owner, provider, response):
-    account = hmac.digest(request.app.state.signing_secret.encode(), owner.encode(), "sha256").hex()[:24]
+    account = audit_account(request, owner)
     ip = login_ip(request)
     with connect() as db:
         db.execute("INSERT INTO login_history(account, logged_in_at, ip, provider) VALUES (?, ?, ?, ?)",
@@ -643,9 +682,9 @@ def materials_page(request: Request):
     return render_page(request, "materials.html", "/materials")
 
 
-@app.get("/reports")
-def reports_page(request: Request):
-    return render_page(request, "reports.html", "/reports")
+@app.get("/reports", include_in_schema=False)
+def reports_page():
+    return RedirectResponse("/schedule#report-history-heading", status_code=303)
 
 
 @app.get("/shop")

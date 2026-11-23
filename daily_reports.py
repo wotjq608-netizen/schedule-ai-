@@ -259,23 +259,6 @@ def make_router(connect):
                                (owner, day)).fetchone()[0]
         return {"token": token, "remaining": GPS_DAILY_LIMIT - count, "limit": GPS_DAILY_LIMIT}
 
-    @router.get("/gps-history")
-    def gps_history(request: Request, before: int | None = None):
-        if getattr(request.state, "guest", False):
-            return {"history": [], "next": None}
-        bound = before if before is not None and 0 < before < 2**63 else 2**63 - 1
-        with connect() as db:
-            rows = db.execute(
-                "SELECT rowid, day, requested_at, used FROM report_gps_usage "
-                "WHERE owner = ? AND rowid < ? ORDER BY rowid DESC LIMIT 21",
-                (request.state.owner, bound)
-            ).fetchall()
-        return {
-            "history": [{"day": row["day"], "requested_at": row["requested_at"],
-                         "used": bool(row["used"])} for row in rows[:20]],
-            "next": rows[19]["rowid"] if len(rows) > 20 else None,
-        }
-
     @router.get("/{ident}")
     def report(request: Request, ident: int, download: bool = False):
         if getattr(request.state, "guest", False) or not 0 < ident < 2**63:

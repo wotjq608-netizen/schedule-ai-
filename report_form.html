@@ -15,10 +15,15 @@
     <p>보고서를 생성하면 입력한 업무와 회의 자료가 Gemini에, 주소가 카카오맵에, 경로 계산용 좌표가 카카오모빌리티에 전송됩니다. 보고서는 내 계정에 저장됩니다.</p>
     <div class="report-actions">
       <button type="submit" class="primary">보고서 생성</button>
-      <a href="/reports">보고서 이력</a>
     </div>
   </form>
   <p id="report-status" role="status"></p>
+  <details id="report-history-inline">
+    <summary id="report-history-heading">내 보고서 이력</summary>
+    <p id="report-history-status" role="status"></p>
+    <ul id="report-list"></ul>
+    <button type="button" id="report-more" hidden>보고서 더 보기</button>
+  </details>
   <pre id="report-preview" hidden></pre>
   <a id="report-download" hidden>Markdown 다운로드</a>
 </section>

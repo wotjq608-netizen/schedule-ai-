@@ -73,7 +73,6 @@ main .tunnel .node{background:#f2f4f8}
 
 .guest-banner{margin:-20px 0 18px;padding:8px 12px;border-radius:9px;background:var(--tint);color:var(--accent-strong)}
 
-.report-history { max-width: 1080px; margin: auto; padding: clamp(16px, 5vw, 54px); }
 .report-panel { background: #fff; color: #192b25; border: 1px solid #d9e4dc; border-radius: 18px; padding: clamp(12px, 3vw, 24px); margin: 20px 0 0; }
 .report-panel h2 { margin-top: 0; }
 .report-panel form { display: grid; gap: 8px; }
@@ -85,5 +84,5 @@ main .tunnel .node{background:#f2f4f8}
 .report-visit input { display: block; }
 .report-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .report-panel [hidden] { display: none; }
-.report-history ul { display: grid; gap: 8px; list-style: none; padding: 0; }
+#report-list { display: grid; gap: 8px; list-style: none; padding: 0; }
 @media (max-width: 620px) { .report-visit { grid-template-columns: 1fr; } }
