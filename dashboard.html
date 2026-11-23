@@ -287,8 +287,8 @@ function showPalettes(temperature, wet) {
   });
 }
 api("weather").then(weather => {
-  const wet = weather.precipitation > 0;
-  el("weather").textContent = weather.region + " " + weather.temperature + "°C · 현재 강수량 " + weather.precipitation + " mm";
+  const wet = weather.precipitation > 0 || weather.rain > 0 || weather.probability >= 45;
+  el("weather").textContent = weather.region + " " + weather.temperature + "°C · 현재 강수량 " + weather.precipitation + " mm" + (weather.probability == null ? "" : " · 오늘 최대 강수확률 " + weather.probability + "%");
   showPalettes(weather.temperature, wet);
 }).catch(() => {
   el("weather").textContent = "날씨를 불러오지 못했습니다. 기본 색 조합을 표시합니다.";

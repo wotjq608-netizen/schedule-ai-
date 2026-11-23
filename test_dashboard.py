@@ -1,4 +1,5 @@
 """Regression checks for the dashboard's local and deployment modes."""
+from datetime import datetime, timedelta
 import ipaddress
 import os
 import sqlite3
@@ -36,6 +37,33 @@ class DashboardTests(unittest.TestCase):
             "SESSION_SECRET": "",
             "KAKAO_LEGACY_OWNER_ID": "",
         }))
+
+    def test_assistant_alarm_and_wishlist(self):
+        with TestClient(main.app, client=("127.0.0.1", 10001)) as client:
+            base = "/api/assistant/"
+            self.assertEqual(client.get(base + "alarms").status_code, 401)
+            self.assertIn("/assistant-assets/assistant.js", client.get("/schedule", auth=AUTH).text)
+            self.assertEqual(client.get("/assistant-assets/assistant.js", auth=AUTH).status_code, 200)
+            due = (datetime.now(main.KST) + timedelta(days=1)).isoformat()
+            original = client.post(base + "alarms", auth=AUTH, json={"time": due})
+            self.assertEqual(original.status_code, 200)
+            self.assertEqual(client.post(base + "alarms", auth=AUTH, json={"time": due}).json(), original.json())
+            path = base + f'alarms/{original.json()["id"]}/ring'
+            self.assertFalse(client.post(path, auth=AUTH).json()["ring"])
+            with main.connect() as db:
+                db.execute("UPDATE assistant_alarms SET due=?", (
+                    (datetime.now(main.KST) - timedelta(minutes=1)).isoformat(timespec="minutes"),))
+            self.assertTrue(client.post(path, auth=AUTH).json()["ring"])
+            self.assertFalse(client.post(path, auth=AUTH).json()["ring"])
+            product = {
+                "name": "Mock keyboard", "price": 49000, "tier": "실속형", "rating": 4.6, "reviews": 25,
+                "note": "Mock review data", "url": "https://example.com/keyboard",
+                "review_url": "https://example.com/reviews",
+            }
+            self.assertEqual(client.post(base + "wishlist", auth=AUTH, json=product).status_code, 200)
+            self.assertEqual(client.get(base + "wishlist", auth=AUTH).json(), {"products": [product]})
+            bad = {**product, "url": "javascript:alert(1)"}
+            self.assertEqual(client.post(base + "wishlist", auth=AUTH, json=bad).status_code, 422)
 
     def test_local_login_and_schedule_extraction(self):
         with TestClient(main.app, client=("127.0.0.1", 10001)) as client:

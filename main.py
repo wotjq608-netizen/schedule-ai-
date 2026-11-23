@@ -17,10 +17,11 @@ from zoneinfo import ZoneInfo
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic
 from pydantic import BaseModel, Field
 
+import assistant_api
 import codex_reply
 import kakao_login
 import materials
@@ -94,6 +95,7 @@ def account_owner(config, ident):
 def prepare_db(db, legacy_owner=None):
     version = db.execute("PRAGMA schema_version").fetchone()[0]
     db.execute(SCHEMA)
+    assistant_api.prepare(db)
     if "owner" not in {row[1] for row in db.execute("PRAGMA table_info(tasks)")}:
         db.execute("ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'legacy'")
     db.execute("CREATE INDEX IF NOT EXISTS tasks_owner_day ON tasks(owner, day, id)")
@@ -165,6 +167,7 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 app.include_router(materials.router)
+app.include_router(assistant_api.make_router(connect))
 PAGES = {"/architecture": "구성도", "/schedule": "일정 관리", "/materials": "자료 정리"}
 
 
@@ -427,7 +430,15 @@ def render_page(request, filename, current):
     if request.app.state.kakao:
         links.append('<form action="/auth/logout" method="post"><button type="submit">로그아웃</button></form>')
     nav = '<nav class="workspace-nav" aria-label="페이지">' + "".join(links) + "</nav>"
-    return HTMLResponse(page.replace("<!-- workspace-nav -->", nav))
+    widget = (ROOT / "assistant_widget.html").read_text(encoding="utf-8")
+    assets = '<link rel="stylesheet" href="/assistant-assets/assistant.css">'
+    script = '<script defer src="/assistant-assets/assistant.js"></script>'
+    return HTMLResponse(page.replace("<!-- workspace-nav -->", assets + nav + widget + script))
+
+
+@app.get("/assistant-assets/{filename}")
+def assistant_asset(filename: Literal["assistant.css", "assistant.js"]):
+    return FileResponse(ROOT / filename)
 
 
 @app.get("/")
@@ -495,19 +506,4 @@ def carry(request: Request, payload: Carry):
 
 @app.get("/api/weather")
 def weather():
-    try:
-        response = httpx.get("https://api.open-meteo.com/v1/forecast", params={
-            "latitude": os.getenv("WEATHER_LAT", "37.5665"),
-            "longitude": os.getenv("WEATHER_LON", "126.978"),
-            "current": "temperature_2m,precipitation",
-        }, timeout=5)
-        response.raise_for_status()
-        current = response.json()["current"]
-        temperature = float(current["temperature_2m"])
-        return {
-            "region": os.getenv("WEATHER_REGION", "서울"),
-            "temperature": temperature,
-            "precipitation": float(current["precipitation"]),
-        }
-    except (httpx.HTTPError, ValueError, KeyError, TypeError):
-        raise HTTPException(502, "날씨 정보를 가져오지 못했습니다.")
+    return assistant_api.forecast()
