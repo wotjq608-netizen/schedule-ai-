@@ -52,7 +52,12 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
     } : null;
     await route.fulfill({ json: { intent } });
   });
-  await page.route('**/api/assistant/compare', route => route.fulfill({ json: { products: [example] } }));
+  const recommendations = [
+    example,
+    { ...example, name: '테스트 중간 모델', tier: '중간 가격대', price: 89000 },
+    { ...example, name: '테스트 고급 모델', tier: '프리미엄', price: 139000 }
+  ];
+  await page.route('**/api/assistant/compare', route => route.fulfill({ json: { products: recommendations } }));
   await page.route('**/api/assistant/weather?*', route => route.fulfill({
     json: { region: '부산', temperature: 16, low: 12, high: 19, probability: 55, rain: 1 }
   }));
@@ -72,17 +77,25 @@ test('카카오 로그인 성공만 기록되고 관리자만 조회할 수 있�
   await send('내일 8시에 알람 맞춰 줘');
   expect((await (await page.request.get('/api/assistant/alarms')).json()).alarms).toHaveLength(2);
   await send('저소음 키보드 찜해줘');
-  await expect(log.getByRole('link', { name: '상품평 출처' })).toBeVisible();
+  await expect(log.getByRole('link', { name: '상품평 출처' })).toHaveCount(3);
   await page.getByRole('link', { name: '쇼핑', exact: true }).click();
   await expect(page.getByRole('heading', { name: '찜 목록' })).toBeVisible();
-  await expect(page.getByRole('textbox', { name: '챗봇으로 상품 찾기' })).toBeVisible();
+  const shopping = page.getByRole('textbox', { name: '챗봇으로 상품 찾기' });
+  const cards = page.locator('#shop-recommendations article');
+  await expect(cards).toHaveCount(3);
+  await shopping.fill('저소음 키보드 추천해줘');
+  await shopping.press('Enter');
+  await expect(page.locator('#assistant-panel')).toBeHidden();
+  await expect(cards).toHaveCount(3);
+  await expect(cards.nth(2)).toContainText('139,000원');
+  await expect(cards.first()).toContainText('모의 상품평');
   await page.getByRole('button', { name: 'AI 챗봇' }).click();
   await expect(log.getByRole('heading', { name: /저소음 키보드 테스트 모델/ })).toBeVisible();
   await input.fill('첫 번째 상품 찜 목록에 추가해줘');
   await input.press('Enter');
   await expect(page).toHaveURL(/\/shop#saved$/);
   await expect(page.getByRole('heading', { name: '찜 목록' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: example.name })).toBeVisible();
+  await expect(page.locator('#saved').getByRole('heading', { name: example.name, exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'AI 챗봇' }).click();
   await send('부산에서 우산 챙길까?');
   await expect(log).toContainText('최대 강수확률 55퍼센트');

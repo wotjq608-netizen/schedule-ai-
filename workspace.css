@@ -54,3 +54,16 @@ main .tunnel .node{background:#f2f4f8}
 .shop-chat label{display:block;margin-bottom:7px;font-weight:700}
 .shop-chat div{display:flex;gap:8px}.shop-chat input{min-width:0;flex:1}
 .shop-chat button{font:inherit;border:1px solid var(--accent);border-radius:9px;padding:6px 12px;cursor:pointer}
+.shop-recommendations{margin-top:28px}
+.recommendations-header{display:flex;align-items:baseline;justify-content:space-between;gap:6px 16px;flex-wrap:wrap;margin-bottom:12px}
+.recommendations-header h2,.recommendations-header p{margin:0}
+.recommendations-header h2{font-size:25px}
+.recommendations-header p{color:var(--muted);font-size:14px}
+#shop-recommendations:empty{min-height:48px;border:1px dashed #cdd4eb;border-radius:16px;background:#fff9}
+.recommendation-grid>.wish-card{display:flex;flex-direction:column;align-items:flex-start}
+.recommendation-tier{border-radius:999px;padding:4px 10px;background:var(--tint);color:var(--accent-strong);font-size:13px;font-weight:700}
+.recommendation-card h3{line-height:1.36;min-height:2.72em}
+.recommendation-card .recommendation-rating{margin:5px 0 10px;font-size:14px}
+.recommendation-card .recommendation-spec{margin:0 0 12px;color:var(--muted);line-height:1.6}
+.recommendation-card footer{width:100%;margin-top:auto}
+@media(max-width:600px){.recommendation-card h3{min-height:0}}

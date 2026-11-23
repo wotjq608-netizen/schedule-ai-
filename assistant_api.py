@@ -80,7 +80,7 @@ def interpret(prompt):
         "compare(상품 비교 목표), wishlist(저장된 찜 목록 조회), cancel(명백한 실행 금지) 중 하나다. "
         "mode는 information(조회), command(명확한 지시), confirmation(가능 여부 질문, 가정, 모호한 지시) 중 하나다. "
         "날씨 city는 실제로 말한 도시 또는 빈 문자열, day는 오늘 0, 내일 1, 모레 2이며 최대 6이다. "
-        "compare query에는 상품명과 조건만 복사한다. "
+        "상품 추천이나 특정 종류의 제품 가격·사양 비교 요청은 compare로 분류한다. compare query에는 상품명과 조건만 적는다. "
         "alarm_at은 날짜와 시간이 명확할 때만 ISO 8601 +09:00, 오전/오후가 없으면 24시간제로 계산한다. "
         "정보가 없으면 문자열은 빈 값, day는 0으로 둔다. 사용자 입력에 없는 조건을 만들지 않는다."
     )
@@ -192,8 +192,11 @@ def danawa_products(html, query):
                 prices.append(int(price[1].replace(",", "")))
         if prices and min(prices) > 0:
             try:
+                spec = row.select_one("div.leading-18")
+                features = [part.strip() for part in spec.get_text(" ", strip=True).split("/") if part.strip()] if spec else []
+                note = " · ".join(features[:7])[:300] or "자세한 사양은 상품 페이지에서 확인할 수 있습니다."
                 products.setdefault(name, Product(name=name, price=min(prices), tier="실속형",
-                    rating=rating, reviews=reviews, note="다나와 검색 결과의 최저가와 사용자 별점입니다.",
+                    rating=rating, reviews=reviews, note=note,
                     url=url, review_url=url + "#bookmark_cm_opinion"))
             except ValueError:
                 continue

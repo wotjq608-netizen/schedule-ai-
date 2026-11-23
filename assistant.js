@@ -67,17 +67,48 @@
     return payload;
   }
 
-  function showProducts(products, heading) {
+  const recommendationGrid = document.getElementById("shop-recommendations");
+  const recommendationStatus = document.getElementById("recommendation-status");
+
+  function showRecommendations(products, message) {
+    if (!recommendationGrid) return;
+    recommendationGrid.replaceChildren();
+    recommendationStatus.textContent = message;
+    if (products.length) showProducts(products, "가격대별 추천 상품", recommendationGrid);
+  }
+
+  function showProducts(products, heading, target = log) {
     const list = document.createElement("div");
-    list.className = "assistant-products";
+    list.className = target === log ? "assistant-products" : "wish-grid recommendation-grid";
     list.setAttribute("aria-label", heading);
     products.forEach((product, index) => {
       const card = document.createElement("article"), h = document.createElement("h3");
       h.textContent = (index + 1) + ". " + product.name;
+      if (target !== log) {
+        card.className = "wish-card recommendation-card";
+        const tier = document.createElement("span");
+        tier.className = "recommendation-tier";
+        tier.textContent = product.tier;
+        card.append(tier);
+      }
       const detail = document.createElement("p");
-      detail.textContent = product.tier + " · " + product.price.toLocaleString("ko-KR") +
-        "원 · 평점 " + product.rating + "/5 · 상품평 " + product.reviews.toLocaleString("ko-KR") + "개\n" + product.note;
-      card.append(h, detail);
+      const price = product.price.toLocaleString("ko-KR") + "원";
+      const reviews = "★ " + product.rating + "/5 · 리뷰 " + product.reviews.toLocaleString("ko-KR") + "개";
+      card.append(h);
+      if (target === log) {
+        detail.textContent = product.tier + " · " + price + " · " + reviews + "\n" + product.note;
+      } else {
+        const amount = document.createElement("strong"), rating = document.createElement("p");
+        amount.className = "wish-price";
+        amount.textContent = price;
+        rating.className = "recommendation-rating";
+        rating.textContent = reviews;
+        detail.className = "recommendation-spec";
+        detail.textContent = product.note;
+        card.append(amount, rating);
+      }
+      card.append(detail);
+      const sources = document.createElement("footer");
       for (const [url, label] of [[product.url, "가격 출처"], [product.review_url, "상품평 출처"]]) {
         if (!url.startsWith("https://")) continue;
         const link = document.createElement("a");
@@ -85,13 +116,17 @@
         link.target = "_blank";
         link.rel = "noopener noreferrer";
         link.textContent = label;
-        card.append(link);
+        (target === log ? card : sources).append(link);
       }
+      if (sources.childElementCount) card.append(sources);
       list.append(card);
     });
-    log.append(list);
-    log.scrollTop = log.scrollHeight;
+    target.append(list);
+    if (target === log) log.scrollTop = log.scrollHeight;
   }
+
+  const resultHint = "검색 당시 가격 · 찜하려면 번호를 문장으로 입력하세요.";
+  if (candidates.length) showRecommendations(candidates, resultHint);
 
   function wishlist() {
     if (location.pathname === "/shop") {
@@ -104,15 +139,29 @@
 
   async function compare(query) {
     rememberCandidates([]);
-    const {products} = await api("compare", {text:query});
+    showRecommendations([], query + " 검색 중…");
+    let products;
+    try {
+      ({products} = await api("compare", {text:query}));
+    } catch (error) {
+      showRecommendations([], error.message);
+      throw error;
+    }
     if (!products.length) {
+      showRecommendations([], "가격과 상품평을 모두 확인한 상품이 없어요. 검색어를 바꿔 보세요.");
       bubble("가격과 상품평 출처를 모두 확인한 상품을 찾지 못했어요. 제품명이나 조건을 바꿔 다시 검색해 주세요.");
       return;
     }
     rememberCandidates(products);
     comparisonShown = true;
     bubble(products.length + "개 상품을 확인했어요. ‘2번 찜해줘’처럼 번호나 상품명으로 골라 주세요. 가격은 검색 시점 기준입니다.");
-    showProducts(products, "상품 비교 결과");
+    if (recommendationGrid) {
+      showRecommendations(products, resultHint);
+      setOpen(false, false);
+      document.getElementById("shop-query").focus({preventScroll:true});
+    } else {
+      showProducts(products, "상품 비교 결과");
+    }
   }
 
   function alarmTime(text) {
@@ -255,7 +304,7 @@
     const product = choice ? candidates[choice - 1] :
       candidates.find(item => normalized.includes(item.name.toLowerCase().replace(/\s+/g, "")));
     const selection = /^\s*(?:[1-3]\s*번?|(?:첫|두|세)\s*번째)[.! ]*$/.test(text);
-    const saveIntent = /찜|저장|선택|골라|담아|추가/.test(text);
+    const saveIntent = /찜|저장|선택|골라|담아|추가|넣어/.test(text);
     if (product && (selection || saveIntent || normalized === product.name.toLowerCase().replace(/\s+/g, ""))) {
       if (/빼고|제외/.test(text)) {
         bubble("선택한 상품을 저장하지 않았어요.", false, voice);
@@ -318,8 +367,8 @@
       pending = null;
       return createAlarm(time, voice);
     }
-    if (intent?.action === "compare" || (/찜|상품\s*비교|가격\s*비교|구매\s*추천/.test(text) && !/하지\s*마|하지\s*말/.test(text))) {
-      const query = (intent?.action === "compare" && intent.query) || text.replace(/(?:을|를)?\s*(?:찜|상품\s*비교|가격\s*비교|구매\s*추천).*$/, "").trim()
+    if (intent?.action === "compare" || (/찜|상품\s*비교|가격\s*비교|구매\s*추천|추천(?:해|\s*좀)|상품\s*정보/.test(text) && !/하지\s*마|하지\s*말/.test(text))) {
+      const query = (intent?.action === "compare" && intent.query) || text.replace(/(?:을|를)?\s*(?:찜|상품\s*비교|가격\s*비교|구매\s*추천|추천(?:해|\s*좀)|상품\s*정보).*$/, "").trim()
         || text.replace(/^(?:찜할|상품\s*비교|가격\s*비교)\s*/, "").trim();
       if (!query || query === text && /^찜/.test(text)) {
         bubble("어떤 상품을 찾을까요? ‘저소음 키보드 찜해줘’처럼 입력해 주세요.", false, voice);
