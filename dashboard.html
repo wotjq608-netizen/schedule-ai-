@@ -318,8 +318,10 @@ async function updateWeather(city) {
     try { localStorage.setItem(weatherPref, city); } catch {}
     const wet = weather.precipitation > 0 || weather.rain > 0 || weather.probability >= 45;
     const chance = weather.probability == null ? "" : " · 오늘 최대 강수확률 " + weather.probability + "%";
-    el("weather").textContent = weather.region + " " + weather.temperature + "°C · 현재 강수량 " +
-      (weather.precipitation == null ? "정보 없음" : weather.precipitation + " mm") + chance +
+    const rain = weather.precipitation != null ? " · 현재 강수량 " + weather.precipitation + " mm"
+      : weather.rain != null ? " · 남은 시간 예상 비 " + weather.rain + " mm" : " · 강수량 정보 없음";
+    const mode = weather.source === "MET Norway" ? " (현재 시각 예보)" : "";
+    el("weather").textContent = weather.region + " " + weather.temperature + "°C" + mode + rain + chance +
       (weather.stale ? " · 최근 저장된 날씨" : "") + (weather.source ? " · " + weather.source : "");
     showPalettes(weather.temperature, wet);
   } catch (error) {
