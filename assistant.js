@@ -148,6 +148,12 @@
   async function compare(query) {
     rememberCandidates([]);
     showRecommendations([], query + " 검색 중…");
+    const retailerLinks = document.getElementById("shop-external-sources");
+    if (retailerLinks) {
+      document.getElementById("shop-lotte-search").href = "https://www.lotteon.com/csearch/search/search?" +
+        new URLSearchParams({q:query, render:"search", platform:"pc"});
+      retailerLinks.hidden = false;
+    }
     let products;
     try {
       ({products} = await api("compare", {text:query}));

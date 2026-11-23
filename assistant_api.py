@@ -319,10 +319,18 @@ def select_tiers(products):
     if len(ordered) == 2:
         return [ordered[0], ordered[-1].model_copy(update={"tier": "프리미엄"})]
     boundaries = (0, len(ordered) // 3, len(ordered) * 2 // 3, len(ordered))
-    return [
-        max(ordered[start:end], key=lambda item: (item.rating, item.reviews)).model_copy(update={"tier": tier})
-        for start, end, tier in zip(boundaries, boundaries[1:], PRICE_TIERS)
-    ]
+    ranges = [ordered[start:end] for start, end in zip(boundaries, boundaries[1:])]
+    def score(item):
+        return item.rating, item.reviews
+    picks = [max(group, key=score) for group in ranges]
+    hosts = {urlsplit(item.url).hostname for item in picks}
+    if len(hosts) == 1:
+        alternatives = [(index, item) for index, group in enumerate(ranges) for item in group
+                        if urlsplit(item.url).hostname not in hosts]
+        if alternatives:
+            index, alternative = max(alternatives, key=lambda pair: score(pair[1]))
+            picks[index] = alternative
+    return [item.model_copy(update={"tier": tier}) for item, tier in zip(picks, PRICE_TIERS)]
 
 
 def fetch_catalog(url, params, query):
@@ -336,7 +344,9 @@ def fetch_catalog(url, params, query):
                 response = client.get(target.geturl())
             response.raise_for_status()
         return danawa_products(response.text, query) if url == DANAWA_SEARCH else lotte_products(response.text)
-    except (httpx.HTTPError, ValueError):
+    except (httpx.HTTPError, ValueError) as exc:
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
+        logging.getLogger("uvicorn.error").warning("Shopping source %s unavailable (%s)", urlsplit(url).hostname, status)
         return None
 
 
